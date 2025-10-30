@@ -6,7 +6,7 @@ try:
     import open3d
     from visual_utils import open3d_vis_utils as V
     OPEN3D_FLAG = True
-except ImportError:
+except:
     import mayavi.mlab as mlab
     from visual_utils import visualize_utils as V
     OPEN3D_FLAG = False
@@ -22,12 +22,21 @@ from pcdet.utils import common_utils
 
 class DemoDataset(DatasetTemplate):
     def __init__(self, dataset_cfg, class_names, training=True, root_path=None, logger=None, ext='.bin'):
+        """
+        Args:
+            root_path:
+            dataset_cfg:
+            class_names:
+            training:
+            logger:
+        """
         super().__init__(
             dataset_cfg=dataset_cfg, class_names=class_names, training=training, root_path=root_path, logger=logger
         )
         self.root_path = root_path
         self.ext = ext
         data_file_list = glob.glob(str(root_path / f'*{self.ext}')) if self.root_path.is_dir() else [self.root_path]
+
         data_file_list.sort()
         self.sample_file_list = data_file_list
 
@@ -60,11 +69,10 @@ def parse_config():
     parser.add_argument('--ckpt', type=str, default=None, help='specify the pretrained model')
     parser.add_argument('--ext', type=str, default='.bin', help='specify the extension of your point cloud data file')
 
-    # 新增参数：禁用可视化
-    parser.add_argument('--no_vis', action='store_true', help='disable visualization to speed up inference')
-
     args = parser.parse_args()
+
     cfg_from_yaml_file(args.cfg_file, cfg)
+
     return args, cfg
 
 
@@ -82,25 +90,20 @@ def main():
     model.load_params_from_file(filename=args.ckpt, logger=logger, to_cpu=True)
     model.cuda()
     model.eval()
-
     with torch.no_grad():
         for idx, data_dict in enumerate(demo_dataset):
-            logger.info(f'Processing sample index: \t{idx + 1}')
+            logger.info(f'Visualized sample index: \t{idx + 1}')
             data_dict = demo_dataset.collate_batch([data_dict])
             load_data_to_gpu(data_dict)
             pred_dicts, _ = model.forward(data_dict)
 
-            # ------------------ Disable visualization if specified ------------------
-            if not args.no_vis:
-                V.draw_scenes(
-                    points=data_dict['points'][:, 1:],
-                    ref_boxes=pred_dicts[0]['pred_boxes'],
-                    ref_scores=pred_dicts[0]['pred_scores'],
-                    ref_labels=pred_dicts[0]['pred_labels']
-                )
-                if not OPEN3D_FLAG:
-                    mlab.show(stop=True)
-            # ------------------------------------------------------------------------
+            V.draw_scenes(
+                points=data_dict['points'][:, 1:], ref_boxes=pred_dicts[0]['pred_boxes'],
+                ref_scores=pred_dicts[0]['pred_scores'], ref_labels=pred_dicts[0]['pred_labels']
+            )
+
+            if not OPEN3D_FLAG:
+                mlab.show(stop=True)
 
     logger.info('Demo done.')
 
