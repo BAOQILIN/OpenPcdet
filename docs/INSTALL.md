@@ -36,3 +36,6 @@ c. Install this `pcdet` library and its dependent libraries by running the follo
 ```shell
 python setup.py develop
 ```
+```shell
+pip install -e . --config-settings editable_mode=compat --no-build-isolation
+```
