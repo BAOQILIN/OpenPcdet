@@ -7,6 +7,15 @@ from . import box_utils
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
 
 
+if hasattr(torch, 'amp') and hasattr(torch.amp, 'custom_fwd'):
+    _amp_custom_fwd = torch.amp.custom_fwd(cast_inputs=torch.float16, device_type='cuda')
+elif hasattr(torch.cuda, 'amp') and hasattr(torch.cuda.amp, 'custom_fwd'):
+    _amp_custom_fwd = torch.cuda.amp.custom_fwd(cast_inputs=torch.float16)
+else:
+    def _amp_custom_fwd(func):
+        return func
+
+
 class SigmoidFocalClassificationLoss(nn.Module):
     """
     Sigmoid focal cross entropy loss.
@@ -149,7 +158,7 @@ class WeightedL1Loss(nn.Module):
             self.code_weights = np.array(code_weights, dtype=np.float32)
             self.code_weights = torch.from_numpy(self.code_weights).cuda()
 
-    @torch.amp.custom_fwd(cast_inputs=torch.float16,device_type="cuda")
+    @_amp_custom_fwd
     def forward(self, input: torch.Tensor, target: torch.Tensor, weights: torch.Tensor = None):
         """
         Args:

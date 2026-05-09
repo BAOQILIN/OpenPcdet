@@ -8,6 +8,26 @@ from torch.nn.utils import clip_grad_norm_
 from pcdet.utils import common_utils, commu_utils
 
 
+def _build_grad_scaler(enabled, init_scale):
+    if hasattr(torch, 'amp') and hasattr(torch.amp, 'GradScaler'):
+        try:
+            return torch.amp.GradScaler(device='cuda', enabled=enabled, init_scale=init_scale)
+        except TypeError:
+            return torch.amp.GradScaler('cuda', enabled=enabled, init_scale=init_scale)
+
+    return torch.cuda.amp.GradScaler(enabled=enabled, init_scale=init_scale)
+
+
+def _amp_autocast(enabled):
+    if hasattr(torch, 'amp') and hasattr(torch.amp, 'autocast'):
+        try:
+            return torch.amp.autocast(device_type='cuda', enabled=enabled)
+        except TypeError:
+            return torch.amp.autocast('cuda', enabled=enabled)
+
+    return torch.cuda.amp.autocast(enabled=enabled)
+
+
 def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, accumulated_iter, optim_cfg,
                     rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False, 
                     use_logger_to_record=False, logger=None, logger_iter_interval=50, cur_epoch=None, 
@@ -18,7 +38,10 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
     ckpt_save_cnt = 1
     start_it = accumulated_iter % total_it_each_epoch
 
-    scaler = torch.amp.GradScaler(device="cuda",enabled=use_amp, init_scale=optim_cfg.get('LOSS_SCALE_FP16', 2.0**16))
+    scaler = _build_grad_scaler(
+        enabled=use_amp,
+        init_scale=optim_cfg.get('LOSS_SCALE_FP16', 2.0**16)
+    )
     
     if rank == 0:
         pbar = tqdm.tqdm(total=total_it_each_epoch, leave=leave_pbar, desc='train', dynamic_ncols=True)
@@ -52,7 +75,7 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         model.train()
         optimizer.zero_grad()
 
-        with torch.amp.autocast(device_type="cuda",enabled=use_amp):
+        with _amp_autocast(enabled=use_amp):
             loss, tb_dict, disp_dict = model_func(model, batch)
 
         scaler.scale(loss).backward()

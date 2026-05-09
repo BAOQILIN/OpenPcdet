@@ -12,7 +12,7 @@ from .waymo.waymo_dataset import WaymoDataset
 from .pandaset.pandaset_dataset import PandasetDataset
 from .lyft.lyft_dataset import LyftDataset
 from .once.once_dataset import ONCEDataset
-from .argo2.argo2_dataset import Argo2Dataset
+#from .argo2.argo2_dataset import Argo2Dataset
 from .custom.custom_dataset import CustomDataset
 
 __all__ = {
@@ -23,8 +23,8 @@ __all__ = {
     'PandasetDataset': PandasetDataset,
     'LyftDataset': LyftDataset,
     'ONCEDataset': ONCEDataset,
-    'CustomDataset': CustomDataset,
-    'Argo2Dataset': Argo2Dataset
+    'CustomDataset': CustomDataset
+ #   'Argo2Dataset': Argo2Dataset
 }
 
 
@@ -75,7 +75,7 @@ def build_dataloader(dataset_cfg, class_names, batch_size, dist, root_path=None,
     else:
         sampler = None
     dataloader = DataLoader(
-        dataset, batch_size=batch_size, pin_memory=True, num_workers=workers,
+        dataset, batch_size=batch_size, pin_memory=True, num_workers=workers,persistent_workers=(workers>0),prefetch_factor=2,
         shuffle=(sampler is None) and training, collate_fn=dataset.collate_batch,
         drop_last=False, sampler=sampler, timeout=0, worker_init_fn=partial(common_utils.worker_init_fn, seed=seed)
     )

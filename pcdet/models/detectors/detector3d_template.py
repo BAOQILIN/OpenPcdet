@@ -389,7 +389,11 @@ class Detector3DTemplate(nn.Module):
 
         logger.info('==> Loading parameters from checkpoint %s to %s' % (filename, 'CPU' if to_cpu else 'GPU'))
         loc_type = torch.device('cpu') if to_cpu else None
-        checkpoint = torch.load(filename, map_location=loc_type)
+        # Explicitly allow loading non-weights-only checkpoint objects.
+        # In PyTorch 2.6+ the default for torch.load changed; pass
+        # weights_only=False to load full checkpoints (model+optimizer/etc).
+        # Only do this for trusted checkpoint files.
+        checkpoint = torch.load(filename, map_location=loc_type, weights_only=False)
         epoch = checkpoint.get('epoch', -1)
         it = checkpoint.get('it', 0.0)
 
