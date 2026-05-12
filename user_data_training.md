@@ -44,26 +44,442 @@ OpenPCDet/
 
 ### 步骤 2：准备点云数据
 
+**重要说明**：custom_dataset 默认使用 `.npy` 格式，但您可以修改代码支持其他格式（如 `.pcd`、`.bin`）。
+
 **文件格式要求**：
-- **格式**：NumPy 数组 (.npy)
 - **数据形状**：(N, 4+) 其中 N 是点数
 - **特征顺序**：[x, y, z, intensity, ...] 
 - **坐标系统**：统一 LiDAR 坐标系（x-前，y-左，z-上）
-- **命名规则**：6 位数字编号（000000.npy, 000001.npy, ...）
+- **命名规则**：6 位数字编号（000000.xxx, 000001.xxx, ...）
 
-**转换示例代码**：
+#### 方案 A：修改 custom_dataset.py 支持 PCD 格式（推荐）
+
+#### 方案 A：修改 custom_dataset.py 支持 PCD 格式（推荐）
+
+**为什么推荐这个方案？**
+- ✅ 不需要格式转换，直接使用原始 PCD 文件
+- ✅ 支持多种格式（.pcd, .bin, .npy），灵活性高
+- ✅ 保持数据原始精度，无损失
+- ✅ 类似 KITTI 数据集的做法（KITTI 直接使用 .bin 文件）
+
+**快速修改（使用自动化脚本）**：
+
+```bash
+# 运行自动修改脚本
+python tools/modify_custom_dataset_for_pcd.py
+```
+
+这个脚本会：
+1. 自动备份原文件为 `custom_dataset.py.backup`
+2. 修改 `get_lidar` 方法支持 .pcd, .bin, .npy 三种格式
+3. 添加 PCD 文件加载功能（支持 ASCII 和 binary 格式）
+
+**手动修改（如果需要自定义）**：
+
+如果您想手动修改，编辑 `pcdet/datasets/custom/custom_dataset.py`，将第 65-69 行的 `get_lidar` 方法替换为：
+
+```python
+def get_lidar(self, idx):
+    """
+    加载点云数据，支持多种格式：.pcd, .bin, .npy
+    """
+    # 按优先级尝试不同格式
+    point_cloud_formats = ['.pcd', '.bin', '.npy']
+    
+    for fmt in point_cloud_formats:
+        lidar_file = self.root_path / 'points' / (f'{idx}{fmt}')
+        if lidar_file.exists():
+            if fmt == '.pcd':
+                # 读取 PCD 文件
+                point_features = self._load_pcd(lidar_file)
+            elif fmt == '.bin':
+                # 读取 BIN 文件（KITTI 格式）
+                point_features = np.fromfile(str(lidar_file), dtype=np.float32).reshape(-1, 4)
+            elif fmt == '.npy':
+                # 读取 NPY 文件
+                point_features = np.load(lidar_file)
+            return point_features
+    
+    raise FileNotFoundError(f"Point cloud file not found for {idx} in formats {point_cloud_formats}")
+
+def _load_pcd(self, pcd_file):
+    """
+    加载 PCD 文件（支持 ASCII 和 binary 格式）
+    
+    Args:
+        pcd_file: PCD 文件路径
+    
+    Returns:
+        points: (N, 4) numpy 数组 [x, y, z, intensity]
+    """
+    try:
+        # 方法 1：使用 open3d（如果已安装）
+        import open3d as o3d
+        pcd = o3d.io.read_point_cloud(str(pcd_file))
+        points_xyz = np.asarray(pcd.points, dtype=np.float32)
+        
+        # 尝试获取强度信息
+        if hasattr(pcd, 'colors') and len(pcd.colors) > 0:
+            colors = np.asarray(pcd.colors)
+            intensity = colors.mean(axis=1, keepdims=True).astype(np.float32)
+        else:
+            intensity = np.ones((points_xyz.shape[0], 1), dtype=np.float32)
+        
+        points = np.concatenate([points_xyz, intensity], axis=1)
+        
+    except ImportError:
+        # 方法 2：手动解析 ASCII PCD（如果没有 open3d）
+        points = self._parse_pcd_ascii(pcd_file)
+    
+    return points
+
+def _parse_pcd_ascii(self, pcd_file):
+    """
+    手动解析 ASCII 格式的 PCD 文件
+    
+    Args:
+        pcd_file: PCD 文件路径
+    
+    Returns:
+        points: (N, 4) numpy 数组 [x, y, z, intensity]
+    """
+    with open(pcd_file, 'r') as f:
+        lines = f.readlines()
+    
+    # 解析头部
+    header = {}
+    data_start = 0
+    
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if line.startswith('DATA'):
+            data_start = i + 1
+            break
+        if line and not line.startswith('#'):
+            parts = line.split()
+            if len(parts) >= 2:
+                header[parts[0]] = parts[1:]
+    
+    # 获取字段信息
+    fields = header.get('FIELDS', ['x', 'y', 'z'])
+    
+    # 解析点云数据
+    points_list = []
+    for line in lines[data_start:]:
+        line = line.strip()
+        if line and not line.startswith('#'):
+            values = list(map(float, line.split()))
+            points_list.append(values)
+    
+    points = np.array(points_list, dtype=np.float32)
+    
+    # 提取或构造 [x, y, z, intensity]
+    if points.shape[1] >= 4:
+        # 假设前 4 列是 x, y, z, intensity
+        points_xyzi = points[:, :4]
+    else:
+        # 如果只有 x, y, z，添加默认强度
+        points_xyzi = np.concatenate([
+            points[:, :3],
+            np.ones((points.shape[0], 1), dtype=np.float32)
+        ], axis=1)
+    
+    return points_xyzi
+```
+
+**步骤 A2：准备 PCD 文件**
+
+**使用自动化脚本（推荐）**：
+
+```bash
+# 批量重命名 PCD 文件为 6 位数字编号
+python tools/rename_pcd_files.py /path/to/your/pcd/files data/custom/points
+
+# 脚本会自动：
+# 1. 将 PCD 文件复制到 data/custom/points/
+# 2. 重命名为 000000.pcd, 000001.pcd, ...
+# 3. 询问是否自动创建 train.txt 和 val.txt
+```
+
+**手动重命名**：
+
+如果您想手动处理：
+
+```python
+from pathlib import Path
+import shutil
+
+def rename_pcd_files(source_dir, target_dir):
+    source_dir = Path(source_dir)
+    target_dir = Path(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    pcd_files = sorted(source_dir.glob('*.pcd'))
+
+    for idx, pcd_file in enumerate(pcd_files):
+        target_file = target_dir / f"{idx:06d}.pcd"
+        shutil.copy(pcd_file, target_file)
+        print(f"复制: {pcd_file.name} -> {target_file.name}")
+
+    print(f"\n总共处理了 {len(pcd_files)} 个文件")
+
+# 使用
+rename_pcd_files('path/to/your/original/pcd/files', 'data/custom/points')
+```
+
+**验证 PCD 文件**：
+
 ```python
 import numpy as np
 
-# 假设原始点云数据为 (N, 4) 数组
-# 列顺序：x, y, z, intensity
-points = load_your_point_cloud()  # 替换为实际加载函数
+# 测试加载 PCD 文件（需要先运行修改脚本）
+import sys
+sys.path.append('.')
+from pcdet.datasets.custom.custom_dataset import CustomDataset
 
-# 确保坐标系统正确（x-前，y-左，z-上）
-# 如果需要坐标转换，在此处理
+# 创建临时数据集实例测试
+import yaml
+from easydict import EasyDict
 
-# 保存为 .npy 格式
-np.save('data/custom/points/000000.npy', points.astype(np.float32))
+cfg = EasyDict(yaml.safe_load(open('tools/cfgs/dataset_configs/custom_dataset.yaml')))
+dataset = CustomDataset(cfg, class_names=['Vehicle'], training=False, root_path='data/custom')
+
+# 测试加载第一个点云
+points = dataset._load_pcd('data/custom/points/000000.pcd')
+print(f"点云形状: {points.shape}")
+print(f"坐标范围: x[{points[:, 0].min():.2f}, {points[:, 0].max():.2f}], "
+      f"y[{points[:, 1].min():.2f}, {points[:, 1].max():.2f}], "
+      f"z[{points[:, 2].min():.2f}, {points[:, 2].max():.2f}]")
+```
+
+#### 方案 B：转换 PCD 为 NPY 格式（如果不想修改代码）
+
+如果您不想修改 custom_dataset.py，可以将 PCD 文件转换为 NPY 格式。
+
+**使用 open3d 转换**：
+
+```python
+import numpy as np
+import open3d as o3d
+from pathlib import Path
+
+def convert_pcd_to_npy(pcd_file, output_file):
+    """
+    将 PCD 文件转换为 OpenPCDet 所需的 .npy 格式
+    
+    Args:
+        pcd_file: PCD 文件路径
+        output_file: 输出的 .npy 文件路径
+    """
+    # 读取 PCD 文件
+    pcd = o3d.io.read_point_cloud(str(pcd_file))
+    
+    # 提取点坐标 (N, 3)
+    points_xyz = np.asarray(pcd.points, dtype=np.float32)
+    
+    # 检查是否有强度信息
+    if pcd.colors:
+        # 如果颜色信息存在，可能需要转换为强度
+        # 这里假设使用灰度值作为强度
+        colors = np.asarray(pcd.colors)
+        intensity = colors.mean(axis=1, keepdims=True).astype(np.float32)
+    else:
+        # 如果没有强度信息，使用默认值
+        intensity = np.ones((points_xyz.shape[0], 1), dtype=np.float32)
+    
+    # 合并为 (N, 4) 数组：[x, y, z, intensity]
+    points = np.concatenate([points_xyz, intensity], axis=1)
+    
+    # 坐标系统检查和转换
+    # PCD 文件可能使用不同的坐标系统
+    # OpenPCDet 要求：x-前，y-左，z-上
+    # 如果您的 PCD 使用不同的坐标系统，在此处进行转换
+    # 例如，如果是 x-右，y-前，z-上，则需要：
+    # points[:, [0, 1]] = points[:, [1, 0]]  # 交换 x 和 y
+    # points[:, 0] = -points[:, 0]  # 反转 x 方向
+    
+    # 保存为 .npy 格式
+    np.save(output_file, points)
+    print(f"转换完成: {pcd_file} -> {output_file}")
+    print(f"点云形状: {points.shape}")
+    print(f"坐标范围: x[{points[:, 0].min():.2f}, {points[:, 0].max():.2f}], "
+          f"y[{points[:, 1].min():.2f}, {points[:, 1].max():.2f}], "
+          f"z[{points[:, 2].min():.2f}, {points[:, 2].max():.2f}]")
+
+# 批量转换示例
+def batch_convert_pcd_to_npy(pcd_dir, output_dir):
+    """批量转换 PCD 文件"""
+    pcd_dir = Path(pcd_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    pcd_files = sorted(pcd_dir.glob('*.pcd'))
+    
+    for idx, pcd_file in enumerate(pcd_files):
+        # 生成 6 位数字编号
+        output_file = output_dir / f"{idx:06d}.npy"
+        convert_pcd_to_npy(pcd_file, output_file)
+
+# 使用示例
+# 安装依赖：pip install open3d
+batch_convert_pcd_to_npy('path/to/your/pcd_files', 'data/custom/points')
+```
+
+**方法 2：手动解析 ASCII PCD 文件**
+
+如果不想安装 open3d，可以手动解析 ASCII 格式的 PCD 文件：
+
+```python
+import numpy as np
+from pathlib import Path
+
+def parse_pcd_ascii(pcd_file):
+    """
+    解析 ASCII 格式的 PCD 文件
+    
+    Args:
+        pcd_file: PCD 文件路径
+    
+    Returns:
+        points: (N, 4+) numpy 数组
+    """
+    with open(pcd_file, 'r') as f:
+        lines = f.readlines()
+    
+    # 解析头部信息
+    header = {}
+    data_start = 0
+    
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if line.startswith('DATA'):
+            data_start = i + 1
+            break
+        
+        if line:
+            parts = line.split()
+            if len(parts) >= 2:
+                header[parts[0]] = parts[1:]
+    
+    # 获取字段信息
+    fields = header.get('FIELDS', ['x', 'y', 'z'])
+    num_points = int(header.get('POINTS', [0])[0])
+    
+    # 解析点云数据
+    points_list = []
+    for line in lines[data_start:]:
+        line = line.strip()
+        if line:
+            values = list(map(float, line.split()))
+            points_list.append(values)
+    
+    points = np.array(points_list, dtype=np.float32)
+    
+    # 提取 x, y, z, intensity
+    # 根据实际 PCD 文件的字段调整索引
+    if points.shape[1] >= 4:
+        # 假设前 4 列是 x, y, z, intensity
+        points_xyzi = points[:, :4]
+    else:
+        # 如果只有 x, y, z，添加默认强度
+        points_xyzi = np.concatenate([
+            points[:, :3],
+            np.ones((points.shape[0], 1), dtype=np.float32)
+        ], axis=1)
+    
+    return points_xyzi
+
+def convert_pcd_to_npy_manual(pcd_file, output_file):
+    """使用手动解析方法转换 PCD 到 NPY"""
+    points = parse_pcd_ascii(pcd_file)
+    
+    # 坐标系统转换（如果需要）
+    # 根据您的 PCD 坐标系统进行调整
+    
+    np.save(output_file, points)
+    print(f"转换完成: {pcd_file} -> {output_file}")
+    print(f"点云形状: {points.shape}")
+
+# 批量转换
+def batch_convert_manual(pcd_dir, output_dir):
+    pcd_dir = Path(pcd_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    pcd_files = sorted(pcd_dir.glob('*.pcd'))
+    
+    for idx, pcd_file in enumerate(pcd_files):
+        output_file = output_dir / f"{idx:06d}.npy"
+        try:
+            convert_pcd_to_npy_manual(pcd_file, output_file)
+        except Exception as e:
+            print(f"转换失败 {pcd_file}: {e}")
+
+# 使用示例
+batch_convert_manual('path/to/your/pcd_files', 'data/custom/points')
+```
+
+**PCD 文件格式说明**：
+
+典型的 ASCII PCD 文件格式：
+```
+# .PCD v0.7 - Point Cloud Data file format
+VERSION 0.7
+FIELDS x y z intensity
+SIZE 4 4 4 4
+TYPE F F F F
+COUNT 1 1 1 1
+WIDTH 1000
+HEIGHT 1
+VIEWPOINT 0 0 0 1 0 0 0
+POINTS 1000
+DATA ascii
+0.1 0.2 0.3 0.5
+0.4 0.5 0.6 0.8
+...
+```
+
+**坐标系统转换注意事项**：
+
+不同的激光雷达和软件可能使用不同的坐标系统。常见的坐标系统包括：
+
+1. **OpenPCDet 标准**（目标）：x-前，y-左，z-上
+2. **ROS REP-103**：x-前，y-左，z-上（与 OpenPCDet 一致）
+3. **Velodyne**：x-前，y-左，z-上（与 OpenPCDet 一致）
+4. **相机坐标系**：x-右，y-下，z-前（需要转换）
+
+如果您的 PCD 文件使用不同的坐标系统，请在转换代码中添加相应的坐标变换。
+
+**验证转换结果**：
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+def visualize_point_cloud(npy_file):
+    """可视化转换后的点云（鸟瞰图）"""
+    points = np.load(npy_file)
+    
+    plt.figure(figsize=(10, 10))
+    plt.scatter(points[:, 0], points[:, 1], c=points[:, 2], s=0.1, cmap='viridis')
+    plt.colorbar(label='z (height)')
+    plt.xlabel('x (forward)')
+    plt.ylabel('y (left)')
+    plt.title(f'Point Cloud: {npy_file}')
+    plt.axis('equal')
+    plt.grid(True)
+    plt.show()
+    
+    print(f"点云统计信息:")
+    print(f"  总点数: {points.shape[0]}")
+    print(f"  特征维度: {points.shape[1]}")
+    print(f"  x 范围: [{points[:, 0].min():.2f}, {points[:, 0].max():.2f}]")
+    print(f"  y 范围: [{points[:, 1].min():.2f}, {points[:, 1].max():.2f}]")
+    print(f"  z 范围: [{points[:, 2].min():.2f}, {points[:, 2].max():.2f}]")
+    print(f"  intensity 范围: [{points[:, 3].min():.2f}, {points[:, 3].max():.2f}]")
+
+# 验证转换结果
+visualize_point_cloud('data/custom/points/000000.npy')
 ```
 
 ### 步骤 3：准备标注数据
