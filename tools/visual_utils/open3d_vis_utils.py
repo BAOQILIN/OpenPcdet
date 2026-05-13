@@ -43,10 +43,18 @@ def draw_scenes(points, gt_boxes=None, ref_boxes=None, ref_labels=None, ref_scor
     if isinstance(ref_boxes, torch.Tensor):
         ref_boxes = ref_boxes.cpu().numpy()
 
+    points = np.asarray(points)
+    if points.ndim != 2 or points.shape[1] < 3:
+        raise ValueError(f'Invalid points shape for visualization: {points.shape}')
+    finite_mask = np.isfinite(points[:, :3]).all(axis=1)
+    points = points[finite_mask]
+    if point_colors is not None:
+        point_colors = np.asarray(point_colors)[finite_mask]
+
     vis = open3d.visualization.Visualizer()
     vis.create_window()
 
-    vis.get_render_option().point_size = 1.0
+    vis.get_render_option().point_size = 2.0
     vis.get_render_option().background_color = np.zeros(3)
 
     # draw origin
@@ -70,6 +78,15 @@ def draw_scenes(points, gt_boxes=None, ref_boxes=None, ref_labels=None, ref_scor
 
     if ref_boxes is not None:
         vis = draw_box(vis, ref_boxes, (0, 1, 0), ref_labels, ref_scores)
+
+    if points.shape[0] > 0:
+        center = points[:, :3].mean(axis=0)
+        extent = np.maximum(points[:, :3].max(axis=0) - points[:, :3].min(axis=0), 1e-3)
+        ctr = vis.get_view_control()
+        ctr.set_lookat(center.tolist())
+        ctr.set_front([0.0, -1.0, 0.6])
+        ctr.set_up([0.0, 0.0, 1.0])
+        ctr.set_zoom(float(np.clip(120.0 / np.linalg.norm(extent), 0.02, 0.7)))
 
     vis.run()
     vis.destroy_window()
@@ -147,7 +164,12 @@ def translate_boxes_to_open3d_instance(gt_boxes):
 
 def draw_box(vis, gt_boxes, color=(0, 1, 0), ref_labels=None, score=None):
     def to_open3d_color(c):
-        c = np.asarray(c, dtype=np.float64)
+        c = np.asarray(c, dtype=np.float64).reshape(-1)
+        if c.size < 3:
+            c = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        c = c[:3]
+        if not np.isfinite(c).all():
+            c = np.array([0.0, 1.0, 0.0], dtype=np.float64)
         if np.max(c) > 1.0:
             c = c / 255.0
         return np.clip(c, 0.0, 1.0)
@@ -158,13 +180,16 @@ def draw_box(vis, gt_boxes, color=(0, 1, 0), ref_labels=None, score=None):
             draw_color = color
         else:
             label = int(ref_labels[i])
-            if 0 <= label < len(box_colormap):
-                draw_color = box_colormap[label]
-            elif 1 <= label <= len(box_colormap):
+            if 1 <= label <= len(box_colormap):
                 draw_color = box_colormap[label - 1]
             else:
                 draw_color = color
-        line_set.paint_uniform_color(to_open3d_color(draw_color))
+
+        line_color = to_open3d_color(draw_color)
+        num_lines = np.asarray(line_set.lines).shape[0]
+        line_set.colors = open3d.utility.Vector3dVector(
+            np.tile(line_color.reshape(1, 3), (num_lines, 1))
+        )
 
         vis.add_geometry(line_set)
 
