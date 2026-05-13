@@ -1,12 +1,25 @@
-DATASET: 'CustomDataset'
-DATA_PATH: '../data/custom'
+DATASET: 'ArsDataset'
+DATA_PATH: '/media/hirain/87e9cd68-1278-4bae-8d73-a0eb5d1ac165/home/jac/ars_train_data/data/ars'
+RAW_DATA_PATH: '/media/hirain/87e9cd68-1278-4bae-8d73-a0eb5d1ac165/home/jac/ars_train_data/origin_type'
+AUTO_PREPARE_FROM_RAW: True
 
-POINT_CLOUD_RANGE: [-75.2, -75.2, -2, 75.2, 75.2, 4]
+POINT_CLOUD_RANGE: [-102.4, -25.6, -3, 102.4, 25.6, 5]
 
 MAP_CLASS_TO_KITTI: {
-    'Vehicle': 'Car',
+    'Obstacle': 'Car',
     'Pedestrian': 'Pedestrian',
-    'Cyclist': 'Cyclist',
+    'Mbike': 'Cyclist',
+    'Car': 'Car',
+    'Bus': 'Car',
+    'Tricycle': 'Cyclist',
+}
+TYPE_ID_TO_NAME: {
+    '0': 'Obstacle',
+    '1': 'Pedestrian',
+    '2': 'Mbike',
+    '3': 'Car',
+    '4': 'Bus',
+    '5': 'Tricycle',
 }
 
 DATA_SPLIT: {
@@ -15,8 +28,8 @@ DATA_SPLIT: {
 }
 
 INFO_PATH: {
-    'train': [custom_infos_train.pkl],
-    'test': [custom_infos_val.pkl],
+    'train': [ars_infos_train.pkl],
+    'test': [ars_infos_val.pkl],
 }
 
 POINT_FEATURE_ENCODING: {
@@ -31,12 +44,13 @@ DATA_AUGMENTOR:
         - NAME: gt_sampling
           USE_ROAD_PLANE: False
           DB_INFO_PATH:
-              - custom_dbinfos_train.pkl
+              - ars_dbinfos_train.pkl
           PREPARE: {
-             filter_by_min_points: ['Vehicle:5', 'Pedestrian:5', 'Cyclist:5'],
+             filter_by_min_points: ['Pedestrian:5', 'Mbike:5', 'Car:5', 'Bus:5'],
+             filter_by_difficulty: [],
           }
 
-          SAMPLE_GROUPS: ['Vehicle:20', 'Pedestrian:15', 'Cyclist:15']
+          SAMPLE_GROUPS: ['Pedestrian:15', 'Mbike:15', 'Car:15', 'Bus:15']
           NUM_POINT_FEATURES: 4
           DATABASE_WITH_FAKELIDAR: False
           REMOVE_EXTRA_WIDTH: [0.0, 0.0, 0.0]
@@ -62,8 +76,8 @@ DATA_PROCESSOR:
       }
 
     - NAME: transform_points_to_voxels
-      VOXEL_SIZE: [0.1, 0.1, 0.15]
-      MAX_POINTS_PER_VOXEL: 5
+      VOXEL_SIZE: [0.16, 0.16, 8]
+      MAX_POINTS_PER_VOXEL: 32
       MAX_NUMBER_OF_VOXELS: {
         'train': 150000,
         'test': 150000

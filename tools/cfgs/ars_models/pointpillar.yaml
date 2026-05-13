@@ -1,93 +1,101 @@
-CLASS_NAMES: ['Car', 'Pedestrian', 'Cyclist']
+# 检测类别列表（需与数据集标注类别一致）
+CLASS_NAMES: ['Obstacle', 'Pedestrian', 'Mbike', 'Car', 'Bus', 'Tricycle']
 
-DATA_CONFIG: 
+DATA_CONFIG:
+    # 继承的数据集基础配置文件
     _BASE_CONFIG_: cfgs/dataset_configs/ars_dataset.yaml
-    POINT_CLOUD_RANGE: [0, -39.68, -3, 69.12, 39.68, 1]
+    # 点云范围 [x_min, y_min, z_min, x_max, y_max, z_max]
+    POINT_CLOUD_RANGE: [-102.4, -25.6, -3, 102.4, 25.6, 5]
+
+    # 数据预处理流程（按顺序执行）
     DATA_PROCESSOR:
-        - NAME: mask_points_and_boxes_outside_range
-          REMOVE_OUTSIDE_BOXES: True
+        - NAME: mask_points_and_boxes_outside_range  # 过滤范围外点和框
+          REMOVE_OUTSIDE_BOXES: True  # 是否移除范围外标注框（训练常开）
 
-        - NAME: shuffle_points
+        - NAME: shuffle_points  # 打乱点顺序
           SHUFFLE_ENABLED: {
-            'train': True,
-            'test': False
+            'train': True,   # 训练时打乱
+            'test': False    # 测试时不打乱，保证可复现
           }
 
-        - NAME: transform_points_to_voxels
-          VOXEL_SIZE: [0.16, 0.16, 4]
-          MAX_POINTS_PER_VOXEL: 32
+        - NAME: transform_points_to_voxels  # 将点云体素化（PointPillar 的 pillar 化）
+          VOXEL_SIZE: [0.16, 0.16, 8]  # 体素尺寸 [x, y, z]
+          MAX_POINTS_PER_VOXEL: 32  # 每个体素最多保留点数
           MAX_NUMBER_OF_VOXELS: {
-            'train': 16000,
-            'test': 40000
+            'train': 16000,  # 训练时最多体素数
+            'test': 40000    # 测试时最多体素数（通常更大）
           }
+
+    # 数据增强配置
     DATA_AUGMENTOR:
-        DISABLE_AUG_LIST: ['placeholder']
+        DISABLE_AUG_LIST: ['placeholder']  # 禁用增强列表（占位）
         AUG_CONFIG_LIST:
-            - NAME: gt_sampling
-              USE_ROAD_PLANE: True
+            - NAME: gt_sampling  # GT 采样增强（从数据库拷贝目标贴入当前场景）
+              USE_ROAD_PLANE: False  # 自定义数据无 road_plane，关闭该项
               DB_INFO_PATH:
-                  - ars_dbinfos_train.pkl
+                  - ars_dbinfos_train.pkl  # GT 数据库信息文件
               PREPARE: {
-                 filter_by_min_points: ['Car:5', 'Pedestrian:5', 'Cyclist:5'],
-                 filter_by_difficulty: [-1],
+                 filter_by_min_points: ['Car:5', 'Pedestrian:5', 'Mbike:5', 'Bus:5'],  # 仅对数据库非空类别过滤
+                 filter_by_difficulty: [],  # 不做难度过滤
               }
 
-              SAMPLE_GROUPS: ['Car:15','Pedestrian:15', 'Cyclist:15']
-              NUM_POINT_FEATURES: 4
-              DATABASE_WITH_FAKELIDAR: False
-              REMOVE_EXTRA_WIDTH: [0.0, 0.0, 0.0]
-              LIMIT_WHOLE_SCENE: False
+              SAMPLE_GROUPS: ['Car:15', 'Pedestrian:15', 'Mbike:15', 'Bus:15']  # 仅对数据库中非空类别采样
+              NUM_POINT_FEATURES: 4  # 点特征维度（一般 x,y,z,intensity）
+              DATABASE_WITH_FAKELIDAR: False  # 数据库是否为 fakelidar 坐标
+              REMOVE_EXTRA_WIDTH: [0.0, 0.0, 0.0]  # 采样框扩展后再去除的宽度
+              LIMIT_WHOLE_SCENE: False  # 是否限制整场景内采样总量
 
-            - NAME: random_world_flip
-              ALONG_AXIS_LIST: ['x']
+            - NAME: random_world_flip  # 全局随机翻转
+              ALONG_AXIS_LIST: ['x']  # 沿哪个轴翻转（这里沿 x 轴）
 
-            - NAME: random_world_rotation
-              WORLD_ROT_ANGLE: [-0.78539816, 0.78539816]
+            - NAME: random_world_rotation  # 全局随机旋转
+              WORLD_ROT_ANGLE: [-0.78539816, 0.78539816]  # 旋转角范围（弧度，约 ±45°）
 
-            - NAME: random_world_scaling
-              WORLD_SCALE_RANGE: [0.95, 1.05]
+            - NAME: random_world_scaling  # 全局随机缩放
+              WORLD_SCALE_RANGE: [0.95, 1.05]  # 缩放范围
 
 MODEL:
-    NAME: PointPillar
+    NAME: PointPillar  # 模型名称
 
     VFE:
-        NAME: PillarVFE
-        WITH_DISTANCE: False
-        USE_ABSLOTE_XYZ: True
-        USE_NORM: True
-        NUM_FILTERS: [64]
+        NAME: PillarVFE  # Pillar 特征编码器
+        WITH_DISTANCE: False  # 是否拼接点到原点距离特征
+        USE_ABSLOTE_XYZ: True  # 是否使用绝对坐标 xyz（原配置字段拼写沿用项目）
+        USE_NORM: True  # 是否做特征归一化
+        NUM_FILTERS: [64]  # VFE 输出通道数
 
     MAP_TO_BEV:
-        NAME: PointPillarScatter
-        NUM_BEV_FEATURES: 64
+        NAME: PointPillarScatter  # 将 pillar 特征散射到 BEV 特征图
+        NUM_BEV_FEATURES: 64  # BEV 特征通道数
 
     BACKBONE_2D:
-        NAME: BaseBEVBackbone
-        LAYER_NUMS: [3, 5, 5]
-        LAYER_STRIDES: [2, 2, 2]
-        NUM_FILTERS: [64, 128, 256]
-        UPSAMPLE_STRIDES: [1, 2, 4]
-        NUM_UPSAMPLE_FILTERS: [128, 128, 128]
+        NAME: BaseBEVBackbone  # 2D BEV 主干网络
+        LAYER_NUMS: [3, 5, 5]  # 每个 stage 的卷积层数
+        LAYER_STRIDES: [2, 2, 2]  # 每个 stage 的下采样步长
+        NUM_FILTERS: [64, 128, 256]  # 每个 stage 输出通道
+        UPSAMPLE_STRIDES: [1, 2, 4]  # 上采样步长
+        NUM_UPSAMPLE_FILTERS: [128, 128, 128]  # 上采样分支通道数
 
     DENSE_HEAD:
-        NAME: AnchorHeadSingle
-        CLASS_AGNOSTIC: False
+        NAME: AnchorHeadSingle  # 单阶段 anchor 检测头
+        CLASS_AGNOSTIC: False  # 是否类别无关回归（False 表示按类）
 
-        USE_DIRECTION_CLASSIFIER: True
-        DIR_OFFSET: 0.78539
-        DIR_LIMIT_OFFSET: 0.0
-        NUM_DIR_BINS: 2
+        USE_DIRECTION_CLASSIFIER: True  # 是否启用方向分类器
+        DIR_OFFSET: 0.78539  # 方向分类偏移（约 π/4）
+        DIR_LIMIT_OFFSET: 0.0  # 方向角限制偏移
+        NUM_DIR_BINS: 2  # 方向分类 bin 数
 
+        # 各类别 anchor 生成配置
         ANCHOR_GENERATOR_CONFIG: [
             {
-                'class_name': 'Car',
-                'anchor_sizes': [[3.9, 1.6, 1.56]],
-                'anchor_rotations': [0, 1.57],
-                'anchor_bottom_heights': [-1.78],
-                'align_center': False,
-                'feature_map_stride': 2,
-                'matched_threshold': 0.6,
-                'unmatched_threshold': 0.45
+                'class_name': 'Car',  # 类别名
+                'anchor_sizes': [[3.9, 1.6, 1.56]],  # anchor 尺寸 [l, w, h]
+                'anchor_rotations': [0, 1.57],  # anchor 朝向（弧度）
+                'anchor_bottom_heights': [-1.78],  # anchor 底部高度
+                'align_center': False,  # 是否中心对齐网格
+                'feature_map_stride': 2,  # 对应特征图步长
+                'matched_threshold': 0.6,  # 正样本 IoU 阈值
+                'unmatched_threshold': 0.45  # 负样本 IoU 阈值
             },
             {
                 'class_name': 'Pedestrian',
@@ -100,8 +108,28 @@ MODEL:
                 'unmatched_threshold': 0.35
             },
             {
-                'class_name': 'Cyclist',
+                'class_name': 'Mbike',
                 'anchor_sizes': [[1.76, 0.6, 1.73]],
+                'anchor_rotations': [0, 1.57],
+                'anchor_bottom_heights': [-0.6],
+                'align_center': False,
+                'feature_map_stride': 2,
+                'matched_threshold': 0.5,
+                'unmatched_threshold': 0.35
+            },
+            {
+                'class_name': 'Bus',
+                'anchor_sizes': [[5.5, 2.0, 2.5]],
+                'anchor_rotations': [0, 1.57],
+                'anchor_bottom_heights': [-1.78],
+                'align_center': False,
+                'feature_map_stride': 2,
+                'matched_threshold': 0.6,
+                'unmatched_threshold': 0.45
+            },
+            {
+                'class_name': 'Tricycle',
+                'anchor_sizes': [[1.76, 1.2, 1.73]],
                 'anchor_rotations': [0, 1.57],
                 'anchor_bottom_heights': [-0.6],
                 'align_center': False,
@@ -112,53 +140,52 @@ MODEL:
         ]
 
         TARGET_ASSIGNER_CONFIG:
-            NAME: AxisAlignedTargetAssigner
-            POS_FRACTION: -1.0
-            SAMPLE_SIZE: 512
-            NORM_BY_NUM_EXAMPLES: False
-            MATCH_HEIGHT: False
-            BOX_CODER: ResidualCoder
+            NAME: AxisAlignedTargetAssigner  # 目标分配器类型
+            POS_FRACTION: -1.0  # 正样本比例（-1 表示不固定比例）
+            SAMPLE_SIZE: 512  # 每帧采样 anchor 数
+            NORM_BY_NUM_EXAMPLES: False  # 是否按样本数归一化
+            MATCH_HEIGHT: False  # 匹配时是否考虑高度维 IoU
+            BOX_CODER: ResidualCoder  # 框编码器
 
         LOSS_CONFIG:
             LOSS_WEIGHTS: {
-                'cls_weight': 1.0,
-                'loc_weight': 2.0,
-                'dir_weight': 0.2,
-                'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+                'cls_weight': 1.0,  # 分类损失权重
+                'loc_weight': 2.0,  # 回归损失权重
+                'dir_weight': 0.2,  # 方向损失权重
+                'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]  # 各回归分量权重
             }
 
     POST_PROCESSING:
-        RECALL_THRESH_LIST: [0.3, 0.5, 0.7]
-        SCORE_THRESH: 0.1
-        OUTPUT_RAW_SCORE: False
+        RECALL_THRESH_LIST: [0.3, 0.5, 0.7]  # 召回率统计阈值
+        SCORE_THRESH: 0.1  # 预测分数阈值（低于该值过滤）
+        OUTPUT_RAW_SCORE: False  # 是否输出未经过后处理的原始分数
 
-        EVAL_METRIC: kitti
+        EVAL_METRIC: kitti  # 评估指标协议
 
         NMS_CONFIG:
-            MULTI_CLASSES_NMS: False
-            NMS_TYPE: nms_gpu
-            NMS_THRESH: 0.01
-            NMS_PRE_MAXSIZE: 4096
-            NMS_POST_MAXSIZE: 500
-
+            MULTI_CLASSES_NMS: False  # 是否按类别分别做 NMS
+            NMS_TYPE: nms_gpu  # NMS 类型（GPU 实现）
+            NMS_THRESH: 0.01  # NMS IoU 阈值
+            NMS_PRE_MAXSIZE: 4096  # NMS 前最多保留候选框数
+            NMS_POST_MAXSIZE: 500  # NMS 后最多保留输出框数
 
 OPTIMIZATION:
-    BATCH_SIZE_PER_GPU: 4
-    NUM_EPOCHS: 80
+    BATCH_SIZE_PER_GPU: 4  # 每张 GPU 的 batch size
+    NUM_EPOCHS: 80  # 训练总 epoch 数
 
-    OPTIMIZER: adam_onecycle
-    LR: 0.003
-    WEIGHT_DECAY: 0.01
-    MOMENTUM: 0.9
+    OPTIMIZER: adam_onecycle  # 优化器与学习率策略
+    LR: 0.003  # 初始学习率
+    WEIGHT_DECAY: 0.01  # 权重衰减
+    MOMENTUM: 0.9  # 动量（对 SGD/onecycle 动量调度有效）
 
-    MOMS: [0.95, 0.85]
-    PCT_START: 0.4
-    DIV_FACTOR: 10
-    DECAY_STEP_LIST: [35, 45]
-    LR_DECAY: 0.1
-    LR_CLIP: 0.0000001
+    MOMS: [0.95, 0.85]  # onecycle 动量变化范围
+    PCT_START: 0.4  # onecycle 升学习率阶段占比
+    DIV_FACTOR: 10  # 初始学习率 = LR / DIV_FACTOR
+    DECAY_STEP_LIST: [35, 45]  # step 衰减里程碑（对 step 策略生效）
+    LR_DECAY: 0.1  # 学习率衰减系数
+    LR_CLIP: 0.0000001  # 学习率下限
 
-    LR_WARMUP: False
-    WARMUP_EPOCH: 1
+    LR_WARMUP: False  # 是否启用 warmup
+    WARMUP_EPOCH: 1  # warmup 轮数
 
-    GRAD_NORM_CLIP: 10
+    GRAD_NORM_CLIP: 10  # 梯度裁剪阈值
