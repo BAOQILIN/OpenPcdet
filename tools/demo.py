@@ -1,5 +1,6 @@
 import argparse
 import glob
+import json
 from pathlib import Path
 
 try:
@@ -42,6 +43,11 @@ class DemoDataset(DatasetTemplate):
         else:
             raise NotImplementedError
 
+        if points.ndim != 2 or points.shape[1] < 4:
+            raise ValueError(f'Invalid point shape: {points.shape}, file={self.sample_file_list[index]}')
+        points = points[:, :4]
+        points = points[np.isfinite(points).all(axis=1)]
+
         input_dict = {
             'points': points,
             'frame_id': index,
@@ -59,6 +65,7 @@ def parse_config():
                         help='specify the point cloud data file or directory')
     parser.add_argument('--ckpt', type=str, default=None, help='specify the pretrained model')
     parser.add_argument('--ext', type=str, default='.bin', help='specify the extension of your point cloud data file')
+    parser.add_argument('--save_pred_dir', type=str, default=None, help='directory to save prediction txt/json')
 
     # 新增参数：禁用可视化
     parser.add_argument('--no_vis', action='store_true', help='disable visualization to speed up inference')
@@ -66,6 +73,35 @@ def parse_config():
     args = parser.parse_args()
     cfg_from_yaml_file(args.cfg_file, cfg)
     return args, cfg
+
+
+def save_predictions(sample_path, pred_dict, class_names, save_dir):
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    sample_stem = Path(sample_path).stem
+
+    pred_boxes = pred_dict['pred_boxes'].detach().cpu().numpy()
+    pred_scores = pred_dict['pred_scores'].detach().cpu().numpy()
+    pred_labels = pred_dict['pred_labels'].detach().cpu().numpy()
+
+    txt_path = save_dir / f'{sample_stem}.txt'
+    with open(txt_path, 'w') as f:
+        for box, score, label in zip(pred_boxes, pred_scores, pred_labels):
+            name = class_names[int(label) - 1]
+            f.write(
+                f"{name} {box[0]:.6f} {box[1]:.6f} {box[2]:.6f} {box[3]:.6f} {box[4]:.6f} {box[5]:.6f} {box[6]:.6f} {score:.6f}\n"
+            )
+
+    json_path = save_dir / f'{sample_stem}.json'
+    json_data = []
+    for box, score, label in zip(pred_boxes, pred_scores, pred_labels):
+        json_data.append({
+            'name': class_names[int(label) - 1],
+            'score': float(score),
+            'box_lidar': [float(x) for x in box.tolist()]
+        })
+    with open(json_path, 'w') as f:
+        json.dump(json_data, f, ensure_ascii=False, indent=2)
 
 
 def main():
@@ -89,6 +125,14 @@ def main():
             data_dict = demo_dataset.collate_batch([data_dict])
             load_data_to_gpu(data_dict)
             pred_dicts, _ = model.forward(data_dict)
+
+            if args.save_pred_dir is not None:
+                save_predictions(
+                    sample_path=demo_dataset.sample_file_list[idx],
+                    pred_dict=pred_dicts[0],
+                    class_names=cfg.CLASS_NAMES,
+                    save_dir=args.save_pred_dir
+                )
 
             # ------------------ Disable visualization if specified ------------------
             if not args.no_vis:
