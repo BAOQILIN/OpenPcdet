@@ -157,7 +157,7 @@ MODEL:
 
     POST_PROCESSING:
         RECALL_THRESH_LIST: [0.3, 0.5, 0.7]  # 召回率统计阈值
-        SCORE_THRESH: 0.1  # 预测分数阈值（低于该值过滤）
+        SCORE_THRESH: 0.3  # 预测分数阈值（低于该值过滤）
         OUTPUT_RAW_SCORE: False  # 是否输出未经过后处理的原始分数
 
         EVAL_METRIC: kitti  # 评估指标协议
@@ -165,7 +165,7 @@ MODEL:
         NMS_CONFIG:
             MULTI_CLASSES_NMS: False  # 是否按类别分别做 NMS
             NMS_TYPE: nms_gpu  # NMS 类型（GPU 实现）
-            NMS_THRESH: 0.01  # NMS IoU 阈值
+            NMS_THRESH: 0.2  # NMS IoU 阈值
             NMS_PRE_MAXSIZE: 4096  # NMS 前最多保留候选框数
             NMS_POST_MAXSIZE: 500  # NMS 后最多保留输出框数
 

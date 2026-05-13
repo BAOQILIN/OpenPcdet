@@ -369,10 +369,13 @@ python tools/test.py \
 
 **运行 Demo**：
 ```bash
-python tools/demo.py \
-    --cfg_file tools/cfgs/ars_models/pointpillar.yaml \
-    --ckpt output/ars_models/pointpillar/final_model/ckpt/checkpoint_epoch_80.pth \
-    --data_path data/ars/points/000000.npy
+cd tools 
+python demo.py \
+    --cfg_file cfgs/ars_models/pointpillar.yaml \
+    --ckpt ../output/ars_models/pointpillar/final_model/ckpt/checkpoint_epoch_80.pth \
+    --ext .npy \
+    --data_path data/ars/points/000000.npy \
+    --save_pred_dir ../output/demo_preds
 ```
 
 **可视化要求**：
