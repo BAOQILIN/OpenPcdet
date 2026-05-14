@@ -1,39 +1,37 @@
 DATASET: 'ArsDataset'
-DATA_PATH: '/media/hirain/87e9cd68-1278-4bae-8d73-a0eb5d1ac165/home/jac/ars_train_data/data/ars'
-RAW_DATA_PATH: '/media/hirain/87e9cd68-1278-4bae-8d73-a0eb5d1ac165/home/jac/ars_train_data/origin_type'
+DATA_PATH: '/media/hirain/87e9cd68-1278-4bae-8d73-a0eb5d1ac165/home/jac/ars_hx_train_data/data/ars'
+RAW_DATA_PATH: '/media/hirain/87e9cd68-1278-4bae-8d73-a0eb5d1ac165/home/jac/ars_hx_train_data/origin_type'
 AUTO_PREPARE_FROM_RAW: True
 
-POINT_CLOUD_RANGE: [-102.4, -25.6, -3, 102.4, 25.6, 5]
+POINT_CLOUD_RANGE: [0, -51.2, -3.1, 102.4, 51.2, 4.9]
 
 MAP_CLASS_TO_KITTI: {
-    'Obstacle': 'Car',
     'Pedestrian': 'Pedestrian',
     'Mbike': 'Cyclist',
     'Car': 'Car',
-    'Bus': 'Car',
-    'Tricycle': 'Cyclist',
+    'Bus': 'Car'
 }
-TYPE_ID_TO_NAME: {
-    '0': 'Obstacle',
-    '1': 'Pedestrian',
-    '2': 'Mbike',
-    '3': 'Car',
-    '4': 'Bus',
-    '5': 'Tricycle',
+# JSON objectType (string) → class name mapping for new-format raw data
+RAW_OBJECT_TYPE_MAP: {
+    'Pedestrian': 'Pedestrian',
+    'Bicycle': 'Mbike',
+    'Car': 'Car',
+    'Heavy Truck': 'Bus',
+    'Bus': 'Bus'
 }
 
 DATA_SPLIT: {
-    'train': train,
-    'test': val
+    'train': 'train',
+    'test': 'val'
 }
 
 INFO_PATH: {
-    'train': [ars_infos_train.pkl],
-    'test': [ars_infos_val.pkl],
+    'train': ['ars_infos_train.pkl'],
+    'test': ['ars_infos_val.pkl'],
 }
 
 POINT_FEATURE_ENCODING: {
-    encoding_type: absolute_coordinates_encoding,
+    encoding_type: 'absolute_coordinates_encoding',
     used_feature_list: ['x', 'y', 'z', 'intensity'],
     src_feature_list: ['x', 'y', 'z', 'intensity'],
 }
@@ -76,8 +74,8 @@ DATA_PROCESSOR:
       }
 
     - NAME: transform_points_to_voxels
-      VOXEL_SIZE: [0.16, 0.16, 8]
-      MAX_POINTS_PER_VOXEL: 32
+      VOXEL_SIZE: [0.2, 0.2, 8]
+      MAX_POINTS_PER_VOXEL: 20
       MAX_NUMBER_OF_VOXELS: {
         'train': 150000,
         'test': 150000

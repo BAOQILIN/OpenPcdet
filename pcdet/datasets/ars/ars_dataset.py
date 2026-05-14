@@ -97,7 +97,13 @@ class ArsDataset(DatasetTemplate):
         """
         将原始JSON和PCD格式转换为本项目便于读取的TXT和NPY格式,同时生成划分的txt文件。
         在AUTO_PREPARE_FROM_RAW配置为True时触发。
+        支持两种JSON格式：
+          - 旧格式: object3D.lidar_main.annotation[] (type 为数字ID)
+          - 新格式: movingObjects[].annotationTool.cuboid3D (objectType 为字符串)
+        使用多线程并行处理以加速数据转换。
         """
+        import concurrent.futures
+
         points_dir = root_path / 'points'
         labels_dir = root_path / 'labels'
         image_sets = root_path / 'ImageSets'
@@ -117,52 +123,103 @@ class ArsDataset(DatasetTemplate):
         labels_dir.mkdir(parents=True, exist_ok=True)
         image_sets.mkdir(parents=True, exist_ok=True)
 
-        # 获取标签类别ID映射字典
-        type_map = {int(k): v for k, v in dict(dataset_cfg.TYPE_ID_TO_NAME).items()}
-        pcd_files = sorted(raw_path.glob('*.pcd'))
-        all_ids = []
+        # 检测 JSON 格式：RAW_OBJECT_TYPE_MAP 存在 → 新格式
+        use_new_format = dataset_cfg.get('RAW_OBJECT_TYPE_MAP') is not None
+        if use_new_format:
+            type_map = dict(dataset_cfg.RAW_OBJECT_TYPE_MAP)
+            if logger is not None:
+                logger.info('Using new JSON format (movingObjects), type_map=%s', type_map)
+        else:
+            type_map = {int(k): v for k, v in dict(dataset_cfg.TYPE_ID_TO_NAME).items()}
+            if logger is not None:
+                logger.info('Using old JSON format (object3D.lidar_main.annotation), type_map=%s', type_map)
 
-        for pcd_file in pcd_files:
+        pcd_files = sorted(raw_path.glob('*.pcd'))
+        if logger is not None:
+            logger.info('Found %d PCD files, starting multi-threaded conversion...', len(pcd_files))
+
+        def _process_sample(pcd_file):
+            """处理单个样本: pcd→npy, json→txt. 返回 (sample_id, success, skipped_invalid)."""
             sample_id = pcd_file.stem
             json_file = raw_path / f'{sample_id}.json'
             if not json_file.exists():
-                continue
+                return sample_id, False, 0
 
-            # 读取pcd转换为numpy数组并保存
             pts = cls._read_ascii_pcd(pcd_file)
             np.save(points_dir / f'{sample_id}.npy', pts)
 
-            # 解析JSON标签
             with open(json_file, 'r') as f:
                 raw = json.load(f)
 
-            annos = raw.get('object3D', {}).get('lidar_main', {}).get('annotation', [])
             label_lines = []
-            for a in annos:
-                t = a.get('type', None)
-                if t is None:
-                    continue
-                name = type_map.get(int(t), None)
-                # 忽略不在预定义类别(class_names)里的标签
-                if name is None or name not in class_names:
-                    continue
-                
-                dim = a.get('dimension', None)
-                pos = a.get('position', None)
-                rot = a.get('rotation', None)
-                
-                # 丢弃无效的3D框
-                if dim is None or pos is None or rot is None or len(dim) < 3 or len(pos) < 3 or len(rot) < 3:
-                    continue
-                # 保存为: x y z dx dy dz heading name
-                line = f"{pos[0]} {pos[1]} {pos[2]} {dim[0]} {dim[1]} {dim[2]} {rot[2]} {name}\n"
-                label_lines.append(line)
+            skipped = 0
 
-            # 写出目标真值 txt 文件
+            if use_new_format:
+                moving_objects = raw.get('movingObjects', [])
+                for obj in moving_objects:
+                    object_type = obj.get('objectType', None)
+                    if object_type is None:
+                        continue
+                    name = type_map.get(object_type, None)
+                    if name is None or name not in class_names:
+                        continue
+
+                    anno_tool = obj.get('annotationTool', {})
+                    cuboid = anno_tool.get('cuboid3D', {})
+                    if cuboid.get('flag', 0) != 1:
+                        skipped += 1
+                        continue
+
+                    value = cuboid.get('value', {})
+                    dim = value.get('cuboidExtent', None)
+                    pos = value.get('position', None)
+                    orient = value.get('orientation', None)
+
+                    if dim is None or pos is None or orient is None:
+                        continue
+                    if len(dim) < 3 or len(pos) < 3 or len(orient) < 3:
+                        continue
+
+                    heading = orient[2]
+                    line = f"{pos[0]} {pos[1]} {pos[2]} {dim[0]} {dim[1]} {dim[2]} {heading} {name}\n"
+                    label_lines.append(line)
+            else:
+                annos = raw.get('object3D', {}).get('lidar_main', {}).get('annotation', [])
+                for a in annos:
+                    t = a.get('type', None)
+                    if t is None:
+                        continue
+                    name = type_map.get(int(t), None)
+                    if name is None or name not in class_names:
+                        continue
+
+                    dim = a.get('dimension', None)
+                    pos = a.get('position', None)
+                    rot = a.get('rotation', None)
+
+                    if dim is None or pos is None or rot is None or len(dim) < 3 or len(pos) < 3 or len(rot) < 3:
+                        continue
+                    line = f"{pos[0]} {pos[1]} {pos[2]} {dim[0]} {dim[1]} {dim[2]} {rot[2]} {name}\n"
+                    label_lines.append(line)
+
             with open(labels_dir / f'{sample_id}.txt', 'w') as f:
                 f.writelines(label_lines)
 
-            all_ids.append(sample_id)
+            return sample_id, True, skipped
+
+        all_ids = []
+        total_skipped = 0
+        num_workers = min(20, len(pcd_files))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(_process_sample, pf): pf for pf in pcd_files}
+            for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                sample_id, success, skipped = future.result()
+                if success:
+                    all_ids.append(sample_id)
+                total_skipped += skipped
+                if logger is not None and (i + 1) % 2000 == 0:
+                    logger.info('Processed %d / %d samples', i + 1, len(pcd_files))
 
         all_ids = sorted(set(all_ids))
         # 因为没有单独对数据集做随机切分,此处简单的将所有样本写给train和val
@@ -172,7 +229,8 @@ class ArsDataset(DatasetTemplate):
             f.write('\n'.join(all_ids) + ('\n' if len(all_ids) > 0 else ''))
 
         if logger is not None:
-            logger.info('Prepared ars dataset from raw path: %s, samples=%d', str(raw_path), len(all_ids))
+            logger.info('Prepared ars dataset from raw path: %s, samples=%d, skipped_invalid=%d',
+                        str(raw_path), len(all_ids), total_skipped)
 
     def include_data(self, mode):
         """
@@ -324,49 +382,38 @@ class ArsDataset(DatasetTemplate):
         会在数据根目录下生成 `gt_database` 文件夹以及关联的 `.pkl` dbinfo 描述文件。
         """
         import torch
+        import concurrent.futures
 
         database_save_path = Path(self.root_path) / ('gt_database' if split == 'train' else ('gt_database_%s' % split))
         db_info_save_path = Path(self.root_path) / ('ars_dbinfos_%s.pkl' % split)
-
-        # 确保目标路径建立
         database_save_path.mkdir(parents=True, exist_ok=True)
-        all_db_infos = {name: [] for name in self.class_names}
 
-        # 加载所有通过 get_infos 提前生成的 pkl 信息
         with open(info_path, 'rb') as f:
             infos = pickle.load(f)
 
-        for k in range(len(infos)):
-            print('gt_database sample: %d/%d' % (k + 1, len(infos)))
+        def _process_sample(k):
             info = infos[k]
             sample_idx = info['point_cloud']['lidar_idx']
-            # 取点
             points = self.get_lidar(sample_idx)
-            
-            # 取框和类别
+
             annos = info['annos']
             names = annos['name']
             gt_boxes = annos['gt_boxes_lidar']
             num_obj = gt_boxes.shape[0]
 
-            # 查询位于任意GT Boxes里的所有点云集合, 依赖 CUDA/CPU roi_aware 算子实现
             point_indices = roiaware_pool3d_utils.points_in_boxes_cpu(
                 torch.from_numpy(points[:, 0:3]), torch.from_numpy(gt_boxes)
             ).numpy()
 
+            sample_db_infos = []
             for i in range(num_obj):
-                # 为每个目标 box 单独切分出一个用于增强时直接读取的 bin 文件
                 filename = '%s_%s_%d.bin' % (sample_idx, names[i], i)
                 filepath = database_save_path / filename
-                # 取出归属此物体框上的所有点
                 gt_points = points[point_indices[i] > 0]
-
-                # 相对于框中心获取物体的相对点云坐标以方便平移和粘贴
                 gt_points[:, :3] -= gt_boxes[i, :3]
                 with open(filepath, 'w') as f:
                     gt_points.tofile(f)
 
-                # 将其加入到对应类别的可用的DB信息维护字典里
                 if (used_classes is None) or names[i] in used_classes:
                     db_path = str(filepath.relative_to(self.root_path))
                     db_info = {
@@ -374,20 +421,28 @@ class ArsDataset(DatasetTemplate):
                         'box3d_lidar': gt_boxes[i], 'num_points_in_gt': gt_points.shape[0],
                         'difficulty': -1
                     }
-                    if names[i] in all_db_infos:
-                        all_db_infos[names[i]].append(db_info)
-                    else:
-                        all_db_infos[names[i]] = [db_info]
+                    sample_db_infos.append(db_info)
+            return sample_db_infos
+
+        all_db_infos = {name: [] for name in self.class_names}
+        num_workers = min(20, len(infos))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = list(executor.map(_process_sample, range(len(infos))))
+            for i, sample_db_infos in enumerate(futures):
+                if (i + 1) % 2000 == 0:
+                    print('gt_database sample: %d/%d' % (i + 1, len(infos)))
+                for db_info in sample_db_infos:
+                    all_db_infos[db_info['name']].append(db_info)
 
         for k, v in all_db_infos.items():
             print('Database %s: %d' % (k, len(v)))
 
-        # 落盘到 ars_dbinfos_xx.pkl
         with open(db_info_save_path, 'wb') as f:
             pickle.dump(all_db_infos, f)
 
 
-def create_ars_infos(dataset_cfg, class_names, data_path, save_path, workers=4):
+def create_ars_infos(dataset_cfg, class_names, data_path, save_path, workers=20):
     """
     一个完整的自动化入口流程,通过命令行调用。
     流程大致包括:
@@ -440,9 +495,10 @@ if __name__ == '__main__':
     if sys.argv.__len__() > 1 and sys.argv[1] == 'create_ars_infos':
         ROOT_DIR = (Path(__file__).resolve().parent / '../../../').resolve()
         dataset_cfg = EasyDict(yaml.safe_load(open(sys.argv[2])))
+        data_path = Path(dataset_cfg.DATA_PATH)
         create_ars_infos(
             dataset_cfg=dataset_cfg,
-            class_names=['Obstacle', 'Pedestrian', 'Mbike', 'Car', 'Bus', 'Tricycle'],
-            data_path=ROOT_DIR / 'data' / 'ars',
-            save_path=ROOT_DIR / 'data' / 'ars',
+            class_names=['Pedestrian', 'Mbike', 'Car', 'Bus'],
+            data_path=data_path,
+            save_path=data_path,
         )

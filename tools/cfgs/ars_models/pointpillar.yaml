@@ -1,29 +1,28 @@
-# 检测类别列表（需与数据集标注类别一致, 输出的时候id分别为0-4）
-CLASS_NAMES: ['Pedestrian', 'Mbike', 'Car', 'Bus', 'Tricycle']
+CLASS_NAMES: ['Pedestrian', 'Mbike', 'Car', 'Bus']
 
 DATA_CONFIG:
     # 继承的数据集基础配置文件
     _BASE_CONFIG_: cfgs/dataset_configs/ars_dataset.yaml
-    # 点云范围 [x_min, y_min, z_min, x_max, y_max, z_max]
-    POINT_CLOUD_RANGE: [-102.4, -25.6, -3, 102.4, 25.6, 5]
+    # 点云范围 [x_min, y_min, z_min, x_max, y_max, z_max] — 与 legacy 对齐
+    POINT_CLOUD_RANGE: [0, -51.2, -3.1, 102.4, 51.2, 4.9]
 
     # 数据预处理流程（按顺序执行）
     DATA_PROCESSOR:
-        - NAME: mask_points_and_boxes_outside_range  # 过滤范围外点和框
-          REMOVE_OUTSIDE_BOXES: True  # 是否移除范围外标注框（训练常开）
+        - NAME: mask_points_and_boxes_outside_range
+          REMOVE_OUTSIDE_BOXES: True
 
-        - NAME: shuffle_points  # 打乱点顺序
+        - NAME: shuffle_points
           SHUFFLE_ENABLED: {
-            'train': True,   # 训练时打乱
-            'test': False    # 测试时不打乱，保证可复现
+            'train': True,
+            'test': False
           }
 
-        - NAME: transform_points_to_voxels  # 将点云体素化（PointPillar 的 pillar 化）
-          VOXEL_SIZE: [0.16, 0.16, 8]  # 体素尺寸 [x, y, z]
-          MAX_POINTS_PER_VOXEL: 32  # 每个体素最多保留点数
+        - NAME: transform_points_to_voxels
+          VOXEL_SIZE: [0.2, 0.2, 8]         # 与 legacy 对齐: 0.2m
+          MAX_POINTS_PER_VOXEL: 20           # 与 legacy 对齐: 20
           MAX_NUMBER_OF_VOXELS: {
-            'train': 16000,  # 训练时最多体素数
-            'test': 40000    # 测试时最多体素数（通常更大）
+            'train': 16000,
+            'test': 40000
           }
 
     # 数据增强配置
@@ -35,11 +34,11 @@ DATA_CONFIG:
               DB_INFO_PATH:
                   - ars_dbinfos_train.pkl  # GT 数据库信息文件
               PREPARE: {
-                 filter_by_min_points: ['Car:5', 'Pedestrian:5', 'Mbike:5', 'Bus:5','Tricycle:5'],  # 仅对数据库非空类别过滤
+                 filter_by_min_points: ['Car:5', 'Pedestrian:5', 'Mbike:5', 'Bus:5'],  # 仅对数据库非空类别过滤
                  filter_by_difficulty: [],  # 不做难度过滤
               }
 
-              SAMPLE_GROUPS: ['Car:15', 'Pedestrian:15', 'Mbike:15', 'Bus:15', 'Tricycle:15']  # 仅对数据库中非空类别采样
+              SAMPLE_GROUPS: ['Car:15', 'Pedestrian:15', 'Mbike:15', 'Bus:15']  # 仅对数据库中非空类别采样
               NUM_POINT_FEATURES: 4  # 点特征维度（一般 x,y,z,intensity）
               DATABASE_WITH_FAKELIDAR: False  # 数据库是否为 fakelidar 坐标
               REMOVE_EXTRA_WIDTH: [0.0, 0.0, 0.0]  # 采样框扩展后再去除的宽度
@@ -58,32 +57,29 @@ MODEL:
     NAME: PointPillar  # 模型名称
 
     VFE:
-        NAME: PillarVFE  # Pillar 特征编码器
-        WITH_DISTANCE: False  # 是否拼接点到原点距离特征
-        USE_ABSLOTE_XYZ: True  # 是否使用绝对坐标 xyz（原配置字段拼写沿用项目）
-        USE_NORM: True  # 是否做特征归一化
-        NUM_FILTERS: [64]  # VFE 输出通道数
+        NAME: PillarVFE
+        WITH_DISTANCE: False
+        USE_ABSLOTE_XYZ: True
+        USE_NORM: False            # 与 legacy 对齐: 无 BatchNorm
+        NUM_FILTERS: [64]
 
     MAP_TO_BEV:
-        NAME: PointPillarScatter  # 将 pillar 特征散射到 BEV 特征图
-        NUM_BEV_FEATURES: 64  # BEV 特征通道数
+        NAME: PointPillarScatter
+        NUM_BEV_FEATURES: 64
 
     BACKBONE_2D:
-        NAME: BaseBEVBackbone  # 2D BEV 主干网络
-        LAYER_NUMS: [3, 5, 5]  # 每个 stage 的卷积层数
-        LAYER_STRIDES: [2, 2, 2]  # 每个 stage 的下采样步长
-        NUM_FILTERS: [64, 128, 256]  # 每个 stage 输出通道
-        UPSAMPLE_STRIDES: [1, 2, 4]  # 上采样步长
-        NUM_UPSAMPLE_FILTERS: [128, 128, 128]  # 上采样分支通道数
+        NAME: BaseBEVBackboneLegacy       # 与 legacy 对齐的自定义 backbone
+        LAYER_NUMS: [3, 5, 5]            # Stage0:4层, Stage1:6层, Stage2:6层
+        LAYER_STRIDES: [1, 4, 2]         # Stage0不降采样, Stage1 s=4, Stage2 s=2
+        NUM_FILTERS: [64, 128, 256]
+        UPSAMPLE_STRIDES: [4, 1, 2]      # Branch1:直接s=4, Branch2:s=1, Branch3:s=2
+        NUM_UPSAMPLE_FILTERS: [128, 128, 128]
 
     DENSE_HEAD:
-        NAME: AnchorHeadSingle  # 单阶段 anchor 检测头
-        CLASS_AGNOSTIC: False  # 是否类别无关回归（False 表示按类）
-
-        USE_DIRECTION_CLASSIFIER: True  # 是否启用方向分类器
-        DIR_OFFSET: 0.78539  # 方向分类偏移（约 π/4）
-        DIR_LIMIT_OFFSET: 0.0  # 方向角限制偏移
-        NUM_DIR_BINS: 2  # 方向分类 bin 数
+        NAME: MultiHeadAnchorHead          # 与 legacy 对齐的多头检测头
+        CLASS_AGNOSTIC: True               # 每个 head 的 cls 是 class-agnostic
+        SHARED_CONV_CHANNELS: 64
+        USE_DIRECTION_CLASSIFIER: False    # direction 融入 angle 分支
 
         # 各类别 anchor 生成配置
         ANCHOR_GENERATOR_CONFIG: [
@@ -93,9 +89,9 @@ MODEL:
                 'anchor_rotations': [0, 1.57],  # anchor 朝向（弧度）
                 'anchor_bottom_heights': [-1.78],  # anchor 底部高度
                 'align_center': False,  # 是否中心对齐网格
-                'feature_map_stride': 2,  # 对应特征图步长
-                'matched_threshold': 0.6,  # 正样本 IoU 阈值
-                'unmatched_threshold': 0.45  # 负样本 IoU 阈值
+                'feature_map_stride': 4,  # 512→128 is 4× downsampling
+                'matched_threshold': 0.6,
+                'unmatched_threshold': 0.45
             },
             {
                 'class_name': 'Pedestrian',
@@ -103,7 +99,7 @@ MODEL:
                 'anchor_rotations': [0, 1.57],
                 'anchor_bottom_heights': [-0.6],
                 'align_center': False,
-                'feature_map_stride': 2,
+                'feature_map_stride': 4,
                 'matched_threshold': 0.5,
                 'unmatched_threshold': 0.35
             },
@@ -113,7 +109,7 @@ MODEL:
                 'anchor_rotations': [0, 1.57],
                 'anchor_bottom_heights': [-0.6],
                 'align_center': False,
-                'feature_map_stride': 2,
+                'feature_map_stride': 4,
                 'matched_threshold': 0.5,
                 'unmatched_threshold': 0.35
             },
@@ -123,19 +119,9 @@ MODEL:
                 'anchor_rotations': [0, 1.57],
                 'anchor_bottom_heights': [-1.78],
                 'align_center': False,
-                'feature_map_stride': 2,
+                'feature_map_stride': 4,
                 'matched_threshold': 0.6,
                 'unmatched_threshold': 0.45
-            },
-            {
-                'class_name': 'Tricycle',
-                'anchor_sizes': [[1.76, 1.2, 1.73]],
-                'anchor_rotations': [0, 1.57],
-                'anchor_bottom_heights': [-0.6],
-                'align_center': False,
-                'feature_map_stride': 2,
-                'matched_threshold': 0.5,
-                'unmatched_threshold': 0.35
             }
         ]
 
@@ -149,10 +135,10 @@ MODEL:
 
         LOSS_CONFIG:
             LOSS_WEIGHTS: {
-                'cls_weight': 1.0,  # 分类损失权重
-                'loc_weight': 2.0,  # 回归损失权重
-                'dir_weight': 0.2,  # 方向损失权重
-                'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]  # 各回归分量权重
+                'cls_weight': 1.0,
+                'loc_weight': 2.0,
+                # 8 参数分解式 box (reg:2 + height:1 + size:3 + angle:2)
+                'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
             }
 
     POST_PROCESSING:

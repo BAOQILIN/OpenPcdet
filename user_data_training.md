@@ -13,16 +13,14 @@
 ---
 
 ## 说明
-原始数据在/media/hirain/87e9cd68-1278-4bae-8d73-a0eb5d1ac165/home/jac/ars_train_data/origin_type目录下,内容如下：
-├── 000000.json
-├── 000000.pcd
-├── 000005.json
-├── 000005.pcd
-├── 000010.json
-├── 000010.pcd
-├── 000015.json
-├── 000015.pcd
-├── 000020.json
+原始数据在/media/hirain/87e9cd68-1278-4bae-8d73-a0eb5d1ac165/home/jac/ars_hx_train_data/origin_type目录下,内容如下：
+├── 1733898949738.json
+├── 1733898949738.pcd
+├── 1733898949938.json
+├── 1733898949938.pcd
+├── 1733898950139.json
+├── 0000173389895013910.pcd
+
 
 
 **PCD 文件格式说明**：
@@ -51,113 +49,136 @@ DATA ascii
 **原始数据中的标签json格式说明**
 ```
 {
-    "data_path": "",
-    "file_name": "000000",
-    "sync_time": 0.0,
-    "object3D": {
-        "lidar_main": {
-            "annotation": [
-                {
-                    "acceleration": [
-                        0,
-                        0,
-                        0
-                    ],
-                    "alpha": 0,
-                    "cluster_id": 0,
-                    "dimension": [
-                        3.894,
-                        2.118,
-                        1.525
-                    ],
-                    "location_image": [
-                        [
-                            -1000,
-                            -1000
-                        ],
-                        [
-                            -1000,
-                            -1000
-                        ],
-                        [
-                            -1000,
-                            -1000
+    "frameInfo": {
+        "egoCar": {}, 
+        "scene": {}, 
+        "timestamp": 1733898949738.0
+    }, 
+    "movingObjects": [
+        {
+            "age": 10, 
+            "annotationTool": {
+                "bBox": {
+                    "flag": 0, 
+                    "value": []
+                }, 
+                "cuboid2D": {
+                    "flag": 0, 
+                    "value": []
+                }, 
+                "cuboid3D": {
+                    "flag": 1, 
+                    "value": {
+                        "cuboidExtent": [
+                            4.118916988372803, 
+                            1.819737063185618, 
+                            1.5159282684326172
+                        ], 
+                        "orientation": [
+                            -1000.0, 
+                            -1000.0, 
+                            -2.930179832496942
+                        ], 
+                        "position": [
+                            -15.222090992932346, 
+                            30.12748853782225, 
+                            -0.06523188736221153
                         ]
-                    ],
-                    "occluded": -1,
-                    "position": [
-                        44.8461,
-                        13.6404,
-                        -0.2534999
-                    ],
-                    "rotation": [
-                        -1000,
-                        -1000,
-                        -0.0956855
-                    ],
-                    "score": 1.0,
-                    "track_id": 1000,
-                    "truncated": -1,
-                    "type": 3,
-                    "velocity": [
-                        0,
-                        0,
+                    }
+                }, 
+                "ellipse2D": {
+                    "flag": 0, 
+                    "value": []
+                }, 
+                "point2D": {
+                    "flag": 0, 
+                    "value": []
+                }, 
+                "point3D": {
+                    "flag": 0, 
+                    "value": []
+                }, 
+                "pointCluster": {
+                    "flag": 0, 
+                    "value": []
+                }, 
+                "polygon2D": {
+                    "flag": 0, 
+                    "value": []
+                }, 
+                "polygon3D": {
+                    "flag": 0, 
+                    "value": []
+                }, 
+                "polyline2D": {
+                    "flag": 0, 
+                    "value": {
+                        "interpolationMethod": "Spline", 
+                        "vertices": []
+                    }
+                }, 
+                "polyline3D": {
+                    "flag": 0, 
+                    "value": {
+                        "interpolationMethod": "Cubic", 
+                        "vertices": []
+                    }
+                }, 
+                "rBBox": {
+                    "flag": 0, 
+                    "value": []
+                }
+            }, 
+            "existenceProbability": 1.0, 
+            "frameList": [], 
+            "measurementStatus": "Measured", 
+            "objectID": 190485, 
+            "objectType": "Car", 
+            "property": {
+                "acceleration": {
+                    "flag": 1, 
+                    "value": [
+                        0, 
+                        0, 
                         0
                     ]
-                },
-                {
-                    "acceleration": [
-                        0,
-                        0,
-                        0
-                    ],
-                    "alpha": 0,
-                    "cluster_id": 0,
-                    "dimension": [
-                        4.17,
-                        1.95,
-                        1.36
-                    ],
-                    "location_image": [
-                        [
-                            -1000,
-                            -1000
-                        ],
-                        [
-                            -1000,
-                            -1000
-                        ],
-                        [
-                            -1000,
-                            -1000
-                        ]
-                    ],
-                    "occluded": -1,
-                    "position": [
-                        6.25,
-                        9.34,
-                        0.83
-                    ],
-                    "rotation": [
-                        -1000,
-                        -1000,
-                        -0.0745256
-                    ],
-                    "score": 1.0,
-                    "track_id": 1000,
-                    "truncated": -1,
-                    "type": 3,
-                    "velocity": [
-                        0,
-                        0,
-                        0
+                }, 
+                "groupID": {
+                    "flag": 0, 
+                    "value": 0
+                }, 
+                "laneAssociation": {
+                    "flag": 0, 
+                    "value": "Unknown"
+                }, 
+                "light": {
+                    "flag": 0, 
+                    "value": []
+                }, 
+                "personsPoses": {
+                    "flag": 0, 
+                    "value": []
+                }, 
+                "recognitionDifficulty": {
+                    "flag": 1, 
+                    "value": "Easy"
+                }, 
+                "ridingStatus": {
+                    "flag": 0, 
+                    "value": "Unknown"
+                }, 
+                "velocity": {
+                    "flag": 1, 
+                    "value": [
+                        0.0, 
+                        0.0, 
+                        -1000.0
                     ]
                 }
-            ],
-            "seq_id": 0,
-            "time_stamp": 0.0
+            }, 
+            "typeConfidence": 1
         }
-    }
+    ]
 }
 ```
 **转换之后的标签格式说明**
@@ -1012,7 +1033,7 @@ batch_box_preds  (1, 163840, 8)   ← 5× 128×128×16 → 逐 anchor 拼接
 新建 `tools/cfgs/ars_models/pointpillar_legacy_compat.yaml`：
 
 ```yaml
-CLASS_NAMES: ['Obstacle', 'Pedestrian', 'Mbike', 'Car', 'Bus', 'Tricycle']
+CLASS_NAMES: ['Pedestrian', 'Mbike', 'Car', 'Bus', 'Tricycle']
 
 DATA_CONFIG:
     _BASE_CONFIG_: cfgs/dataset_configs/ars_dataset.yaml

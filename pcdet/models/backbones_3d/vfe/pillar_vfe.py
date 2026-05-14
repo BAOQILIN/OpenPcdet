@@ -34,7 +34,14 @@ class PFNLayer(nn.Module):
                                for num_part in range(num_parts+1)]
             x = torch.cat(part_linear_out, dim=0)
         else:
-            x = self.linear(inputs)
+            if torch.onnx.is_in_onnx_export():
+                # ONNX 导出时使用 Conv1d 替代 Linear，使结构与 legacy 一致
+                # weight: (out, in) → unsqueeze(-1) → (out, in, 1) as Conv1d kernel
+                x = F.conv1d(inputs.transpose(1, 2),
+                             self.linear.weight.unsqueeze(-1),
+                             bias=self.linear.bias).transpose(1, 2)
+            else:
+                x = self.linear(inputs)
         torch.backends.cudnn.enabled = False
         x = self.norm(x.permute(0, 2, 1)).permute(0, 2, 1) if self.use_norm else x
         torch.backends.cudnn.enabled = True
@@ -119,7 +126,7 @@ class PillarVFE(VFETemplate):
         for pfn in self.pfn_layers:
             features = pfn(features)
         if torch.onnx.is_in_onnx_export():
-            features = features.view(-1, self.num_filters[-1])
+            features = features.view(1, -1, self.num_filters[-1])
         else:
             features = features.squeeze()
         batch_dict['pillar_features'] = features

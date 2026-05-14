@@ -20,7 +20,7 @@ class DummyDataset:
         ).astype(np.int64)
         self.depth_downsample_factor = None
         self.point_feature_encoder = type('obj', (object,), {
-            'num_point_features': 4  # x, y, z, intensity
+            'num_point_features': 4
         })()
 
     @property
@@ -30,23 +30,20 @@ class DummyDataset:
 
 class VFEWrapper(torch.nn.Module):
     """
-    Model A: PillarVFE only (NO scatter inside — scatter on HOST)
-    Input:  voxels (M, 32, 4), voxel_coords (M, 4), voxel_num_points (M,)
-    Output: pillar_features (M, 64)  -- sparse, one feature vector per pillar
-
-    Scatter (pillar_features + voxel_coords → spatial_features) is done
-    on the HOST side, outside TensorRT/ONNX, to avoid ScatterND in TRT.
+    Model A: PillarVFE (legacy-compatible).
+    Input:  voxel_features (M, 20, 4), point_num_per_voxel (M,), voxel_coords (M, 4)
+    Output: pillar_features (1, M, 64) — 3D sparse, batch dim preserved
     """
 
     def __init__(self, vfe):
         super().__init__()
         self.vfe = vfe
 
-    def forward(self, voxels, voxel_coords, voxel_num_points):
+    def forward(self, voxel_features, voxel_coords, point_num_per_voxel):
         batch_dict = {
-            'voxels': voxels,
+            'voxels': voxel_features,
             'voxel_coords': voxel_coords,
-            'voxel_num_points': voxel_num_points,
+            'voxel_num_points': point_num_per_voxel,
             'batch_size': 1,
         }
         batch_dict = self.vfe(batch_dict)
@@ -55,10 +52,9 @@ class VFEWrapper(torch.nn.Module):
 
 class Backbone2DWrapper(torch.nn.Module):
     """
-    Model B: BaseBEVBackbone only
-    Input:  spatial_features (1, 64, 320, 1280)  -- static shape BEV pseudo-image
-            (produced by HOST scatter from pillar_features + voxel_coords)
-    Output: spatial_features_2d (1, 384, 160, 640)
+    Model B: Backbone2D (legacy-compatible).
+    Input:  spatial_features (1, 64, 512, 512)
+    Output: spatial_features_2d (1, 384, 128, 128)
     """
 
     def __init__(self, backbone_2d):
@@ -76,10 +72,10 @@ class Backbone2DWrapper(torch.nn.Module):
 
 class RPNWrapper(torch.nn.Module):
     """
-    Model C: AnchorHeadSingle only
-    Input:  spatial_features_2d (1, 384, 160, 640)
-    Output: cls_preds (1, 1024000, 6), box_preds (1, 1024000, 7),
-            dir_cls_preds (1, 1024000, 2)
+    Model C: RPN head (legacy-compatible).
+    Input:  spatial_features_2d (1, 384, 128, 128)
+    Output: batch_cls_preds (1, 163840, 1), batch_box_preds (1, 163840, 8)
+            - raw deltas, no BoxCoder inside ONNX
     """
 
     def __init__(self, dense_head):
@@ -95,14 +91,13 @@ class RPNWrapper(torch.nn.Module):
         return (
             batch_dict['batch_cls_preds'],
             batch_dict['batch_box_preds'],
-            batch_dict['batch_dir_cls_preds'],
         )
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Export PointPillar as 3 ONNX models (vfe + backbone2d + rpn) '
-                    'with scatter on HOST for full TRT acceleration'
+        description='Export PointPillar as 3 legacy-compatible ONNX models '
+                    '(vfe + backbone2d + rpn) with scatter on HOST'
     )
     parser.add_argument('--cfg_file', type=str, required=True, help='Path to model config yaml')
     parser.add_argument('--ckpt', type=str, required=True, help='Path to checkpoint .pth file')
@@ -128,8 +123,7 @@ def export_split_onnx(args):
     model.load_state_dict(checkpoint['model_state'], strict=True)
     print(f'Loaded checkpoint from {args.ckpt} (epoch {checkpoint.get("epoch", "unknown")})')
 
-    # module_list for PointPillar:
-    #   [0] PillarVFE, [1] PointPillarScatter, [2] BaseBEVBackbone, [3] AnchorHeadSingle
+    # module_list: [PillarVFE, PointPillarScatter, Backbone2D, DenseHead]
     vfe = model.module_list[0]
     scatter = model.module_list[1]
     backbone_2d = model.module_list[2]
@@ -145,11 +139,11 @@ def export_split_onnx(args):
     backbone_path = output_dir / f'{stem}_backbone2d.onnx'
     rpn_path = output_dir / f'{stem}_rpn.onnx'
 
-    # Common dummy input
+    # Common dummy input (legacy-compatible)
     M = args.max_voxels
-    P = 32   # max points per pillar (matches config)
-    F = 4    # x, y, z, intensity
-    grid_size = dummy_dataset.grid_size  # [nx, ny, nz]
+    P = 20  # legacy MAX_POINTS_PER_VOXEL = 20
+    F = 4   # x, y, z, intensity
+    grid_size = dummy_dataset.grid_size  # usually [512, 512, 1]
 
     dummy_voxels = torch.zeros(M, P, F, device='cuda')
     dummy_voxel_coords = torch.zeros(M, 4, dtype=torch.int32, device='cuda')
@@ -171,18 +165,18 @@ def export_split_onnx(args):
             export_params=True,
             opset_version=args.opset_version,
             do_constant_folding=True,
-            input_names=['voxels', 'voxel_coords', 'voxel_num_points'],
+            input_names=['voxel_features', 'voxel_coords', 'point_num_per_voxel'],
             output_names=['pillar_features'],
             dynamic_axes={
-                'voxels': {0: 'num_voxels'},
+                'voxel_features': {0: 'num_voxels'},
                 'voxel_coords': {0: 'num_voxels'},
-                'voxel_num_points': {0: 'num_voxels'},
-                'pillar_features': {0: 'num_voxels'},
+                'point_num_per_voxel': {0: 'num_voxels'},
+                'pillar_features': {1: 'num_voxels'},
             },
         )
     print(f'VFE exported: {vfe_path}')
 
-    # Generate spatial_features via VFE + Scatter (for Backbone2D dummy input)
+    # Generate spatial_features via VFE + Scatter
     print('\n--- Generating spatial_features for Backbone2D input ---')
     with torch.no_grad():
         batch_dict = {
@@ -194,10 +188,10 @@ def export_split_onnx(args):
         batch_dict = vfe(batch_dict)
         batch_dict = scatter(batch_dict)
         spatial_features = batch_dict['spatial_features']
-    print(f'spatial_features shape: {spatial_features.shape}')
+    print(f'spatial_features shape: {spatial_features.shape}')  # expected: (1, 64, 512, 512)
 
     # ---- Export Backbone2D (Model B) ----
-    print(f'\n=== Exporting Backbone2D (BaseBEVBackbone only) to {backbone_path} ===')
+    print(f'\n=== Exporting Backbone2D to {backbone_path} ===')
     backbone_wrapper = Backbone2DWrapper(backbone_2d)
     backbone_wrapper.cuda()
     backbone_wrapper.eval()
@@ -215,16 +209,16 @@ def export_split_onnx(args):
         )
     print(f'Backbone2D exported: {backbone_path}')
 
-    # Generate spatial_features_2d via Backbone (for RPN dummy input)
+    # Generate spatial_features_2d via Backbone
     print('\n--- Generating spatial_features_2d for RPN input ---')
     with torch.no_grad():
         batch_dict = {'spatial_features': spatial_features, 'batch_size': 1}
         batch_dict = backbone_2d(batch_dict)
         spatial_features_2d = batch_dict['spatial_features_2d']
-    print(f'spatial_features_2d shape: {spatial_features_2d.shape}')
+    print(f'spatial_features_2d shape: {spatial_features_2d.shape}')  # expected: (1, 384, 128, 128)
 
     # ---- Export RPN (Model C) ----
-    print(f'\n=== Exporting RPN (AnchorHeadSingle only) to {rpn_path} ===')
+    print(f'\n=== Exporting RPN (MultiHeadAnchorHead) to {rpn_path} ===')
     rpn_wrapper = RPNWrapper(dense_head)
     rpn_wrapper.cuda()
     rpn_wrapper.eval()
@@ -238,7 +232,7 @@ def export_split_onnx(args):
             opset_version=args.opset_version,
             do_constant_folding=True,
             input_names=['spatial_features_2d'],
-            output_names=['cls_preds', 'box_preds', 'dir_cls_preds'],
+            output_names=['batch_cls_preds', 'batch_box_preds'],
         )
     print(f'RPN exported: {rpn_path}')
 
@@ -260,34 +254,26 @@ def export_split_onnx(args):
     rpn_size = rpn_path.stat().st_size / 1024 / 1024
 
     print(f'\n{"="*70}')
-    print(f'Export Summary — 3-Way Split (方案A: Scatter on HOST)')
+    print(f'Export Summary — Legacy-Compatible 3-Way Split')
     print(f'{"="*70}')
     print(f'')
     print(f'[1] VFE ONNX:       {vfe_path} ({vfe_size:.1f} MB)')
-    print(f'    Inputs:   voxels (M, 32, 4), voxel_coords (M, 4), voxel_num_points (M,)')
-    print(f'    Outputs:  pillar_features (M, 64)')
+    print(f'    Inputs:   voxel_features (M, 20, 4), voxel_coords (M, 4),')
+    print(f'              point_num_per_voxel (M,)')
+    print(f'    Outputs:  pillar_features (1, M, 64)')
     print(f'')
-    print(f'    ╔════════════════════════════════════════╗')
-    print(f'    ║  HOST Scatter (outside TRT/ONNX)      ║')
-    print(f'    ║  pillar_features + voxel_coords       ║')
-    print(f'    ║         ↓                             ║')
-    print(f'    ║  spatial_features (1, 64, 320, 1280)  ║')
-    print(f'    ╚════════════════════════════════════════╝')
+    print(f'    HOST Scatter: pillar_features + voxel_coords')
+    print(f'              -> spatial_features (1, 64, 512, 512)')
     print(f'')
     print(f'[2] Backbone2D ONNX: {backbone_path} ({backbone_size:.1f} MB)')
-    print(f'    Inputs:   spatial_features (1, 64, 320, 1280)')
-    print(f'    Outputs:  spatial_features_2d (1, 384, 160, 640)')
+    print(f'    Inputs:   spatial_features (1, 64, 512, 512)')
+    print(f'    Outputs:  spatial_features_2d (1, 384, 128, 128)')
     print(f'')
     print(f'[3] RPN ONNX:        {rpn_path} ({rpn_size:.1f} MB)')
-    print(f'    Inputs:   spatial_features_2d (1, 384, 160, 640)')
-    print(f'    Outputs:  cls_preds (1, 1024000, 6), box_preds (1, 1024000, 7),')
-    print(f'              dir_cls_preds (1, 1024000, 2)')
+    print(f'    Inputs:   spatial_features_2d (1, 384, 128, 128)')
+    print(f'    Outputs:  batch_cls_preds (1, 163840, 1),')
+    print(f'              batch_box_preds (1, 163840, 8) [raw deltas]')
     print(f'')
-    print(f'{"="*70}')
-    print(f'TensorRT conversion commands:')
-    print(f'  trtexec --onnx={vfe_path}       --saveEngine={output_dir / f"{stem}_vfe.engine"}       --fp16 --minShapes=... --optShapes=... --maxShapes=...')
-    print(f'  trtexec --onnx={backbone_path}  --saveEngine={output_dir / f"{stem}_backbone2d.engine"}  --fp16')
-    print(f'  trtexec --onnx={rpn_path}       --saveEngine={output_dir / f"{stem}_rpn.engine"}       --fp16')
     print(f'{"="*70}')
 
 
