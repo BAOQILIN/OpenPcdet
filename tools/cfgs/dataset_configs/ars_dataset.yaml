@@ -1,6 +1,6 @@
 DATASET: 'ArsDataset'
-DATA_PATH: '/media/hirain/87e9cd68-1278-4bae-8d73-a0eb5d1ac165/home/jac/ars_hx_train_data/data/ars'
-RAW_DATA_PATH: '/media/hirain/87e9cd68-1278-4bae-8d73-a0eb5d1ac165/home/jac/ars_hx_train_data/origin_type'
+DATA_PATH: '/home/bql/ARS/ARS_Data/ars_hx_train_data/data/ars'
+RAW_DATA_PATH: '/home/bql/ARS/ARS_Data/ars_hx_train_data/origin_type'
 AUTO_PREPARE_FROM_RAW: True
 
 POINT_CLOUD_RANGE: [0, -51.2, -3.1, 102.4, 51.2, 4.9]

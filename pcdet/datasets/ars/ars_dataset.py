@@ -10,6 +10,124 @@ from ...utils import common_utils
 from ..dataset import DatasetTemplate
 
 
+def _read_ascii_pcd_static(pcd_path: Path) -> np.ndarray:
+    """
+    静态方法:读取Ascii格式的pcd点云文件(用于多进程)。
+    Args:
+        pcd_path: pcd文件路径
+    Returns:
+        np.ndarray: Nx4的点云数组 (x, y, z, intensity)
+    """
+    with open(pcd_path, 'r') as f:
+        lines = f.readlines()
+
+    data_start = None
+    for i, line in enumerate(lines):
+        if line.strip().lower().startswith('data '):
+            if 'ascii' not in line.strip().lower():
+                raise ValueError(f'Only ascii pcd is supported: {pcd_path}')
+            data_start = i + 1
+            break
+    if data_start is None:
+        raise ValueError(f'Invalid pcd file without DATA header: {pcd_path}')
+
+    points = []
+    for line in lines[data_start:]:
+        s = line.strip()
+        if not s:
+            continue
+        vals = s.split()
+        if len(vals) < 4:
+            continue
+        points.append([float(vals[0]), float(vals[1]), float(vals[2]), float(vals[3])])
+
+    if len(points) == 0:
+        return np.zeros((0, 4), dtype=np.float32)
+    arr = np.asarray(points, dtype=np.float32)
+    finite_mask = np.isfinite(arr).all(axis=1)
+    return arr[finite_mask]
+
+
+def _process_sample_worker(args):
+    """
+    多进程worker函数:处理单个样本 pcd→npy, json→txt。
+    Args:
+        args: (pcd_file, raw_path, points_dir, labels_dir, use_new_format, type_map, class_names)
+    Returns:
+        (sample_id, success, skipped_invalid)
+    """
+    pcd_file, raw_path, points_dir, labels_dir, use_new_format, type_map, class_names = args
+
+    sample_id = pcd_file.stem
+    json_file = raw_path / f'{sample_id}.json'
+    if not json_file.exists():
+        return sample_id, False, 0
+
+    # 读取并保存点云
+    pts = _read_ascii_pcd_static(pcd_file)
+    np.save(points_dir / f'{sample_id}.npy', pts)
+
+    # 读取并解析标注
+    with open(json_file, 'r') as f:
+        raw = json.load(f)
+
+    label_lines = []
+    skipped = 0
+
+    if use_new_format:
+        moving_objects = raw.get('movingObjects', [])
+        for obj in moving_objects:
+            object_type = obj.get('objectType', None)
+            if object_type is None:
+                continue
+            name = type_map.get(object_type, None)
+            if name is None or name not in class_names:
+                continue
+
+            anno_tool = obj.get('annotationTool', {})
+            cuboid = anno_tool.get('cuboid3D', {})
+            if cuboid.get('flag', 0) != 1:
+                skipped += 1
+                continue
+
+            value = cuboid.get('value', {})
+            dim = value.get('cuboidExtent', None)
+            pos = value.get('position', None)
+            orient = value.get('orientation', None)
+
+            if dim is None or pos is None or orient is None:
+                continue
+            if len(dim) < 3 or len(pos) < 3 or len(orient) < 3:
+                continue
+
+            heading = orient[2]
+            line = f"{pos[0]} {pos[1]} {pos[2]} {dim[0]} {dim[1]} {dim[2]} {heading} {name}\n"
+            label_lines.append(line)
+    else:
+        annos = raw.get('object3D', {}).get('lidar_main', {}).get('annotation', [])
+        for a in annos:
+            t = a.get('type', None)
+            if t is None:
+                continue
+            name = type_map.get(int(t), None)
+            if name is None or name not in class_names:
+                continue
+
+            dim = a.get('dimension', None)
+            pos = a.get('position', None)
+            rot = a.get('rotation', None)
+
+            if dim is None or pos is None or rot is None or len(dim) < 3 or len(pos) < 3 or len(rot) < 3:
+                continue
+            line = f"{pos[0]} {pos[1]} {pos[2]} {dim[0]} {dim[1]} {dim[2]} {rot[2]} {name}\n"
+            label_lines.append(line)
+
+    with open(labels_dir / f'{sample_id}.txt', 'w') as f:
+        f.writelines(label_lines)
+
+    return sample_id, True, skipped
+
+
 """
 ArsDataset: 针对ARS(自定义）数据集的数据处理类。
 继承自 DatasetTemplate,负责数据集的解析、加载、划分以及数据预处理。
@@ -100,9 +218,10 @@ class ArsDataset(DatasetTemplate):
         支持两种JSON格式：
           - 旧格式: object3D.lidar_main.annotation[] (type 为数字ID)
           - 新格式: movingObjects[].annotationTool.cuboid3D (objectType 为字符串)
-        使用多线程并行处理以加速数据转换。
+        使用多进程并行处理以加速数据转换(绕过Python GIL限制)。
         """
         import concurrent.futures
+        import multiprocessing
 
         points_dir = root_path / 'points'
         labels_dir = root_path / 'labels'
@@ -136,90 +255,37 @@ class ArsDataset(DatasetTemplate):
 
         pcd_files = sorted(raw_path.glob('*.pcd'))
         if logger is not None:
-            logger.info('Found %d PCD files, starting multi-threaded conversion...', len(pcd_files))
+            logger.info('Found %d PCD files, starting multi-process conversion...', len(pcd_files))
 
-        def _process_sample(pcd_file):
-            """处理单个样本: pcd→npy, json→txt. 返回 (sample_id, success, skipped_invalid)."""
-            sample_id = pcd_file.stem
-            json_file = raw_path / f'{sample_id}.json'
-            if not json_file.exists():
-                return sample_id, False, 0
-
-            pts = cls._read_ascii_pcd(pcd_file)
-            np.save(points_dir / f'{sample_id}.npy', pts)
-
-            with open(json_file, 'r') as f:
-                raw = json.load(f)
-
-            label_lines = []
-            skipped = 0
-
-            if use_new_format:
-                moving_objects = raw.get('movingObjects', [])
-                for obj in moving_objects:
-                    object_type = obj.get('objectType', None)
-                    if object_type is None:
-                        continue
-                    name = type_map.get(object_type, None)
-                    if name is None or name not in class_names:
-                        continue
-
-                    anno_tool = obj.get('annotationTool', {})
-                    cuboid = anno_tool.get('cuboid3D', {})
-                    if cuboid.get('flag', 0) != 1:
-                        skipped += 1
-                        continue
-
-                    value = cuboid.get('value', {})
-                    dim = value.get('cuboidExtent', None)
-                    pos = value.get('position', None)
-                    orient = value.get('orientation', None)
-
-                    if dim is None or pos is None or orient is None:
-                        continue
-                    if len(dim) < 3 or len(pos) < 3 or len(orient) < 3:
-                        continue
-
-                    heading = orient[2]
-                    line = f"{pos[0]} {pos[1]} {pos[2]} {dim[0]} {dim[1]} {dim[2]} {heading} {name}\n"
-                    label_lines.append(line)
-            else:
-                annos = raw.get('object3D', {}).get('lidar_main', {}).get('annotation', [])
-                for a in annos:
-                    t = a.get('type', None)
-                    if t is None:
-                        continue
-                    name = type_map.get(int(t), None)
-                    if name is None or name not in class_names:
-                        continue
-
-                    dim = a.get('dimension', None)
-                    pos = a.get('position', None)
-                    rot = a.get('rotation', None)
-
-                    if dim is None or pos is None or rot is None or len(dim) < 3 or len(pos) < 3 or len(rot) < 3:
-                        continue
-                    line = f"{pos[0]} {pos[1]} {pos[2]} {dim[0]} {dim[1]} {dim[2]} {rot[2]} {name}\n"
-                    label_lines.append(line)
-
-            with open(labels_dir / f'{sample_id}.txt', 'w') as f:
-                f.writelines(label_lines)
-
-            return sample_id, True, skipped
+        # 准备worker参数
+        worker_args = [
+            (pcd_file, raw_path, points_dir, labels_dir, use_new_format, type_map, class_names)
+            for pcd_file in pcd_files
+        ]
 
         all_ids = []
         total_skipped = 0
-        num_workers = min(20, len(pcd_files))
+        # 使用进程池绕过GIL限制,实现真正的并行处理
+        # CPU密集型任务使用CPU核心数
+        num_workers = min(multiprocessing.cpu_count(), max(4, len(pcd_files)))
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-            futures = {executor.submit(_process_sample, pf): pf for pf in pcd_files}
-            for i, future in enumerate(concurrent.futures.as_completed(futures)):
+        if logger is not None:
+            logger.info('Using %d worker processes for parallel processing', num_workers)
+
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+            futures = [executor.submit(_process_sample_worker, args) for args in worker_args]
+            completed = 0
+            for future in concurrent.futures.as_completed(futures):
                 sample_id, success, skipped = future.result()
                 if success:
                     all_ids.append(sample_id)
                 total_skipped += skipped
-                if logger is not None and (i + 1) % 2000 == 0:
-                    logger.info('Processed %d / %d samples', i + 1, len(pcd_files))
+                completed += 1
+                # 更频繁的进度反馈:每50个或每5%打印一次
+                if logger is not None and (completed % 50 == 0 or completed % max(1, len(pcd_files) // 20) == 0):
+                    logger.info('Processed %d / %d samples (%.1f%%), speed: ~%.1f samples/s',
+                               completed, len(pcd_files), 100.0 * completed / len(pcd_files),
+                               completed / max(1, completed // 10))
 
         all_ids = sorted(set(all_ids))
         # 因为没有单独对数据集做随机切分,此处简单的将所有样本写给train和val
@@ -425,13 +491,17 @@ class ArsDataset(DatasetTemplate):
             return sample_db_infos
 
         all_db_infos = {name: [] for name in self.class_names}
-        num_workers = min(20, len(infos))
+        # I/O密集型任务使用更多线程
+        num_workers = min(64, max(4, len(infos)))
+        print('Using %d worker threads for GT database creation' % num_workers)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-            futures = list(executor.map(_process_sample, range(len(infos))))
-            for i, sample_db_infos in enumerate(futures):
-                if (i + 1) % 2000 == 0:
-                    print('gt_database sample: %d/%d' % (i + 1, len(infos)))
+            futures_list = [executor.submit(_process_sample, k) for k in range(len(infos))]
+            for i, future in enumerate(concurrent.futures.as_completed(futures_list)):
+                sample_db_infos = future.result()
+                # 更频繁的进度反馈:每100个或每10%打印一次
+                if (i + 1) % 100 == 0 or (i + 1) % max(1, len(infos) // 10) == 0:
+                    print('gt_database sample: %d/%d (%.1f%%)' % (i + 1, len(infos), 100.0 * (i + 1) / len(infos)))
                 for db_info in sample_db_infos:
                     all_db_infos[db_info['name']].append(db_info)
 
