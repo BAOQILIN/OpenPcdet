@@ -128,6 +128,106 @@ def _process_sample_worker(args):
     return sample_id, True, skipped
 
 
+def _create_gt_database_worker(args):
+    """
+    多进程worker函数:为单个样本创建GT database。
+    Args:
+        args: (info, root_path, database_save_path, used_classes, class_names)
+    Returns:
+        list of db_info dicts
+    """
+    import torch
+    from ...ops.roiaware_pool3d import roiaware_pool3d_utils
+
+    info, root_path, database_save_path, used_classes, class_names = args
+
+    sample_idx = info['point_cloud']['lidar_idx']
+
+    # 读取点云
+    lidar_file = root_path / 'points' / f'{sample_idx}.npy'
+    points = np.load(lidar_file)
+    if points.ndim != 2 or points.shape[1] < 4:
+        return []
+    points = points[:, :4]
+    points = points[np.isfinite(points).all(axis=1)]
+
+    annos = info['annos']
+    names = annos['name']
+    gt_boxes = annos['gt_boxes_lidar']
+    num_obj = gt_boxes.shape[0]
+
+    point_indices = roiaware_pool3d_utils.points_in_boxes_cpu(
+        torch.from_numpy(points[:, 0:3]), torch.from_numpy(gt_boxes)
+    ).numpy()
+
+    sample_db_infos = []
+    for i in range(num_obj):
+        filename = '%s_%s_%d.bin' % (sample_idx, names[i], i)
+        filepath = database_save_path / filename
+        gt_points = points[point_indices[i] > 0]
+        gt_points[:, :3] -= gt_boxes[i, :3]
+        with open(filepath, 'w') as f:
+            gt_points.tofile(f)
+
+        if (used_classes is None) or names[i] in used_classes:
+            db_path = str(filepath.relative_to(root_path))
+            db_info = {
+                'name': names[i], 'path': db_path, 'gt_idx': i,
+                'box3d_lidar': gt_boxes[i], 'num_points_in_gt': gt_points.shape[0],
+                'difficulty': -1
+            }
+            sample_db_infos.append(db_info)
+
+    return sample_db_infos
+
+
+def _get_info_worker(args):
+    """
+    多进程worker函数:为单个样本生成info字典。
+    Args:
+        args: (sample_idx, root_path, split, num_features, has_label)
+    Returns:
+        info dict
+    """
+    sample_idx, root_path, split, num_features, has_label = args
+
+    info = {}
+    pc_info = {'num_features': num_features, 'lidar_idx': sample_idx}
+    info['point_cloud'] = pc_info
+
+    if has_label:
+        # 读取标签文件
+        label_file = root_path / 'labels' / f'{sample_idx}.txt'
+        if not label_file.exists():
+            return info
+
+        with open(label_file, 'r') as f:
+            lines = f.readlines()
+
+        gt_boxes = []
+        gt_names = []
+        for line in lines:
+            line_list = line.strip().split()
+            if len(line_list) < 8:
+                continue
+            gt_boxes.append(line_list[:7])
+            gt_names.append(line_list[7])
+
+        if len(gt_boxes) == 0:
+            gt_boxes_lidar = np.zeros((0, 7), dtype=np.float32)
+            name = np.array([], dtype=str)
+        else:
+            gt_boxes_lidar = np.array(gt_boxes, dtype=np.float32)
+            name = np.array(gt_names)
+
+        annotations = {}
+        annotations['name'] = name
+        annotations['gt_boxes_lidar'] = gt_boxes_lidar[:, :7]
+        info['annos'] = annotations
+
+    return info
+
+
 """
 ArsDataset: 针对ARS(自定义）数据集的数据处理类。
 继承自 DatasetTemplate,负责数据集的解析、加载、划分以及数据预处理。
@@ -416,39 +516,36 @@ class ArsDataset(DatasetTemplate):
         """
         根据指定样本列表生成 info 列表对象(包含每帧的点云路径,真值等信息)。
         这在通过 `create_ars_infos` 操作时使用以固化数据索引及真值信息。
+        使用多进程并行处理以加速info生成。
         """
-        import concurrent.futures as futures
-
-        def process_single_scene(sample_idx):
-            print('%s sample_idx: %s' % (self.split, sample_idx))
-            info = {}
-            # 设置基本 point cloud 属性信息
-            pc_info = {'num_features': num_features, 'lidar_idx': sample_idx}
-            info['point_cloud'] = pc_info
-
-            # 解析标注加入 info 用于后续获取
-            if has_label:
-                annotations = {}
-                gt_boxes_lidar, name = self.get_label(sample_idx)
-                annotations['name'] = name
-                annotations['gt_boxes_lidar'] = gt_boxes_lidar[:, :7]
-                info['annos'] = annotations
-
-            return info
+        import concurrent.futures
+        import multiprocessing
 
         sample_id_list = sample_id_list if sample_id_list is not None else self.sample_id_list
-        # 采用多线程方式并发解析获取
-        with futures.ThreadPoolExecutor(num_workers) as executor:
-            infos = executor.map(process_single_scene, sample_id_list)
-        return list(infos)
+
+        # 准备worker参数
+        worker_args = [
+            (sample_idx, Path(self.root_path), self.split, num_features, has_label)
+            for sample_idx in sample_id_list
+        ]
+
+        # 使用进程池并行处理
+        actual_workers = min(multiprocessing.cpu_count(), max(4, len(sample_id_list), num_workers))
+        print(f'Using {actual_workers} worker processes for generating infos ({self.split})')
+
+        with concurrent.futures.ProcessPoolExecutor(max_workers=actual_workers) as executor:
+            infos = list(executor.map(_get_info_worker, worker_args))
+
+        return infos
 
     def create_groundtruth_database(self, info_path=None, used_classes=None, split='train'):
         """
         提取包含目标的真值点云用来建立 GT database(用于 GT Sampling 数据增强）。
         会在数据根目录下生成 `gt_database` 文件夹以及关联的 `.pkl` dbinfo 描述文件。
+        使用多进程并行处理以加速GT database创建。
         """
-        import torch
         import concurrent.futures
+        import multiprocessing
 
         database_save_path = Path(self.root_path) / ('gt_database' if split == 'train' else ('gt_database_%s' % split))
         db_info_save_path = Path(self.root_path) / ('ars_dbinfos_%s.pkl' % split)
@@ -457,51 +554,26 @@ class ArsDataset(DatasetTemplate):
         with open(info_path, 'rb') as f:
             infos = pickle.load(f)
 
-        def _process_sample(k):
-            info = infos[k]
-            sample_idx = info['point_cloud']['lidar_idx']
-            points = self.get_lidar(sample_idx)
-
-            annos = info['annos']
-            names = annos['name']
-            gt_boxes = annos['gt_boxes_lidar']
-            num_obj = gt_boxes.shape[0]
-
-            point_indices = roiaware_pool3d_utils.points_in_boxes_cpu(
-                torch.from_numpy(points[:, 0:3]), torch.from_numpy(gt_boxes)
-            ).numpy()
-
-            sample_db_infos = []
-            for i in range(num_obj):
-                filename = '%s_%s_%d.bin' % (sample_idx, names[i], i)
-                filepath = database_save_path / filename
-                gt_points = points[point_indices[i] > 0]
-                gt_points[:, :3] -= gt_boxes[i, :3]
-                with open(filepath, 'w') as f:
-                    gt_points.tofile(f)
-
-                if (used_classes is None) or names[i] in used_classes:
-                    db_path = str(filepath.relative_to(self.root_path))
-                    db_info = {
-                        'name': names[i], 'path': db_path, 'gt_idx': i,
-                        'box3d_lidar': gt_boxes[i], 'num_points_in_gt': gt_points.shape[0],
-                        'difficulty': -1
-                    }
-                    sample_db_infos.append(db_info)
-            return sample_db_infos
+        # 准备worker参数
+        worker_args = [
+            (info, Path(self.root_path), database_save_path, used_classes, self.class_names)
+            for info in infos
+        ]
 
         all_db_infos = {name: [] for name in self.class_names}
-        # I/O密集型任务使用更多线程
-        num_workers = min(64, max(4, len(infos)))
-        print('Using %d worker threads for GT database creation' % num_workers)
+        # 使用进程池绕过GIL限制,实现真正的并行处理
+        num_workers = min(multiprocessing.cpu_count(), max(4, len(infos)))
+        print('Using %d worker processes for GT database creation' % num_workers)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-            futures_list = [executor.submit(_process_sample, k) for k in range(len(infos))]
-            for i, future in enumerate(concurrent.futures.as_completed(futures_list)):
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+            futures_list = [executor.submit(_create_gt_database_worker, args) for args in worker_args]
+            completed = 0
+            for future in concurrent.futures.as_completed(futures_list):
                 sample_db_infos = future.result()
-                # 更频繁的进度反馈:每100个或每10%打印一次
-                if (i + 1) % 100 == 0 or (i + 1) % max(1, len(infos) // 10) == 0:
-                    print('gt_database sample: %d/%d (%.1f%%)' % (i + 1, len(infos), 100.0 * (i + 1) / len(infos)))
+                completed += 1
+                # 更频繁的进度反馈:每50个或每5%打印一次
+                if completed % 50 == 0 or completed % max(1, len(infos) // 20) == 0:
+                    print('gt_database sample: %d/%d (%.1f%%)' % (completed, len(infos), 100.0 * completed / len(infos)))
                 for db_info in sample_db_infos:
                     all_db_infos[db_info['name']].append(db_info)
 
