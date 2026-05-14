@@ -72,4 +72,9 @@ class AnchorHeadSingle(AnchorHeadTemplate):
             data_dict['batch_box_preds'] = batch_box_preds
             data_dict['cls_preds_normalized'] = False
 
+        if dir_cls_preds is not None:
+            data_dict['batch_dir_cls_preds'] = dir_cls_preds.view(
+                data_dict['batch_size'], -1, self.model_cfg.NUM_DIR_BINS
+            )
+
         return data_dict

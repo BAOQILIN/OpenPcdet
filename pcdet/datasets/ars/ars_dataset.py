@@ -10,29 +10,61 @@ from ...utils import common_utils
 from ..dataset import DatasetTemplate
 
 
+"""
+ArsDataset: 针对ARS(自定义）数据集的数据处理类。
+继承自 DatasetTemplate,负责数据集的解析、加载、划分以及数据预处理。
+"""
 class ArsDataset(DatasetTemplate):
     def __init__(self, dataset_cfg, class_names, training=True, root_path=None, logger=None):
+        """
+        初始化ArsDataset。
+        Args:
+            dataset_cfg: 数据集配置对象。
+            class_names: 需要检测的类别名称列表。
+            training: 是否处于训练模式。
+            root_path: 数据集根目录。
+            logger: 日志记录器。
+        """
+        # 获取项目的绝对根路径
         project_root = Path(__file__).resolve().parents[3]
+        # 解析真实根路径
         root_path = Path(root_path) if root_path is not None else Path(dataset_cfg.DATA_PATH)
         if not root_path.is_absolute():
             root_path = project_root / root_path
+        
+        # 自动从原始数据准备数据格式 (pcd和json -> npy和txt)
         if dataset_cfg.get('AUTO_PREPARE_FROM_RAW', False):
             self.prepare_from_raw_if_needed(dataset_cfg, root_path, class_names, logger)
+        
+        # 调用父类初始化生成数据增强和预处理组件
         super().__init__(dataset_cfg, class_names, training=training, root_path=root_path, logger=logger)
 
+        # 获取划分方式 (train / val / test)
         self.split = self.dataset_cfg.DATA_SPLIT[self.mode]
+        # 对应划分文件的路径存放具体的样本名文件
         split_dir = self.root_path / 'ImageSets' / f'{self.split}.txt'
         self.sample_id_list = [x.strip() for x in open(split_dir).readlines()] if split_dir.exists() else []
+        
         self.ars_infos = []
+        # 将相应模式(train或test)的info pkl文件载入到 self.ars_infos 中
         self.include_data(self.mode)
+        # 是否映射到KITTI类别 (通常用于评估或转移时使用一致的名字)
         self.map_class_to_kitti = self.dataset_cfg.MAP_CLASS_TO_KITTI
 
     @staticmethod
     def _read_ascii_pcd(pcd_path: Path) -> np.ndarray:
+        """
+        读取Ascii格式的pcd点云文件。
+        Args:
+            pcd_path: pcd文件路径
+        Returns:
+            np.ndarray: Nx4的点云数组 (x, y, z, intensity)
+        """
         with open(pcd_path, 'r') as f:
             lines = f.readlines()
 
         data_start = None
+        # 查找数据开始行 (DATA ascii)
         for i, line in enumerate(lines):
             if line.strip().lower().startswith('data '):
                 if 'ascii' not in line.strip().lower():
@@ -43,6 +75,7 @@ class ArsDataset(DatasetTemplate):
             raise ValueError(f'Invalid pcd file without DATA header: {pcd_path}')
 
         points = []
+        # 逐行解析点云坐标及强度
         for line in lines[data_start:]:
             s = line.strip()
             if not s:
@@ -52,6 +85,7 @@ class ArsDataset(DatasetTemplate):
                 continue
             points.append([float(vals[0]), float(vals[1]), float(vals[2]), float(vals[3])])
 
+        # 返回Nx4格式的数据,并过滤非法坐标(如无穷大, NaN等)
         if len(points) == 0:
             return np.zeros((0, 4), dtype=np.float32)
         arr = np.asarray(points, dtype=np.float32)
@@ -60,12 +94,17 @@ class ArsDataset(DatasetTemplate):
 
     @classmethod
     def prepare_from_raw_if_needed(cls, dataset_cfg, root_path: Path, class_names, logger=None):
+        """
+        将原始JSON和PCD格式转换为本项目便于读取的TXT和NPY格式,同时生成划分的txt文件。
+        在AUTO_PREPARE_FROM_RAW配置为True时触发。
+        """
         points_dir = root_path / 'points'
         labels_dir = root_path / 'labels'
         image_sets = root_path / 'ImageSets'
         train_list = image_sets / 'train.txt'
         val_list = image_sets / 'val.txt'
 
+        # 如果数据目录和划分文件都已存在,则认为已经准备就绪
         if points_dir.exists() and labels_dir.exists() and train_list.exists() and val_list.exists():
             return
 
@@ -73,10 +112,12 @@ class ArsDataset(DatasetTemplate):
         if not raw_path.exists():
             raise FileNotFoundError(f'RAW_DATA_PATH not found: {raw_path}')
 
+        # 创建目标文件夹
         points_dir.mkdir(parents=True, exist_ok=True)
         labels_dir.mkdir(parents=True, exist_ok=True)
         image_sets.mkdir(parents=True, exist_ok=True)
 
+        # 获取标签类别ID映射字典
         type_map = {int(k): v for k, v in dict(dataset_cfg.TYPE_ID_TO_NAME).items()}
         pcd_files = sorted(raw_path.glob('*.pcd'))
         all_ids = []
@@ -87,9 +128,11 @@ class ArsDataset(DatasetTemplate):
             if not json_file.exists():
                 continue
 
+            # 读取pcd转换为numpy数组并保存
             pts = cls._read_ascii_pcd(pcd_file)
             np.save(points_dir / f'{sample_id}.npy', pts)
 
+            # 解析JSON标签
             with open(json_file, 'r') as f:
                 raw = json.load(f)
 
@@ -100,22 +143,29 @@ class ArsDataset(DatasetTemplate):
                 if t is None:
                     continue
                 name = type_map.get(int(t), None)
+                # 忽略不在预定义类别(class_names)里的标签
                 if name is None or name not in class_names:
                     continue
+                
                 dim = a.get('dimension', None)
                 pos = a.get('position', None)
                 rot = a.get('rotation', None)
+                
+                # 丢弃无效的3D框
                 if dim is None or pos is None or rot is None or len(dim) < 3 or len(pos) < 3 or len(rot) < 3:
                     continue
+                # 保存为: x y z dx dy dz heading name
                 line = f"{pos[0]} {pos[1]} {pos[2]} {dim[0]} {dim[1]} {dim[2]} {rot[2]} {name}\n"
                 label_lines.append(line)
 
+            # 写出目标真值 txt 文件
             with open(labels_dir / f'{sample_id}.txt', 'w') as f:
                 f.writelines(label_lines)
 
             all_ids.append(sample_id)
 
         all_ids = sorted(set(all_ids))
+        # 因为没有单独对数据集做随机切分,此处简单的将所有样本写给train和val
         with open(train_list, 'w') as f:
             f.write('\n'.join(all_ids) + ('\n' if len(all_ids) > 0 else ''))
         with open(val_list, 'w') as f:
@@ -125,6 +175,9 @@ class ArsDataset(DatasetTemplate):
             logger.info('Prepared ars dataset from raw path: %s, samples=%d', str(raw_path), len(all_ids))
 
     def include_data(self, mode):
+        """
+        由 self.dataset_cfg.INFO_PATH 中配置的文件名加载 pkl 数据信息到 self.ars_infos 列表中。
+        """
         if self.logger is not None:
             self.logger.info('Loading ARS dataset.')
         ars_infos = []
@@ -140,6 +193,12 @@ class ArsDataset(DatasetTemplate):
             self.logger.info('Total samples for ARS dataset: %d' % len(ars_infos))
 
     def get_label(self, idx):
+        """
+        根据样本 idx 读取对应的物体标签 .txt 文件,返回解析后的 3D 边界框与类别名
+        Returns:
+            gt_boxes: N x 7 numpy数组 (x, y, z, dx, dy, dz, heading)
+            gt_names: N 维 numpy数组 (包含每个框的类别名)
+        """
         label_file = self.root_path / 'labels' / ('%s.txt' % idx)
         assert label_file.exists()
         with open(label_file, 'r') as f:
@@ -149,6 +208,7 @@ class ArsDataset(DatasetTemplate):
         gt_names = []
         for line in lines:
             line_list = line.strip().split()
+            # 需要满足长度>=8: 7个坐标信息+1个类别名
             if len(line_list) < 8:
                 continue
             gt_boxes.append(line_list[:7])
@@ -159,16 +219,25 @@ class ArsDataset(DatasetTemplate):
         return np.array(gt_boxes, dtype=np.float32), np.array(gt_names)
 
     def get_lidar(self, idx):
+        """
+        根据样本 idx 读取对应的点云 .npy 文件,返回 Nx4 的点云信息 (x, y, z, intensity)
+        """
         lidar_file = self.root_path / 'points' / ('%s.npy' % idx)
         assert lidar_file.exists()
         point_features = np.load(lidar_file)
         if point_features.ndim != 2 or point_features.shape[1] < 4:
             raise ValueError(f'Invalid lidar shape: {point_features.shape}, file={lidar_file}')
+        
+        # 仅取前4维 (x, y, z, intensity)
         point_features = point_features[:, :4]
+        # 过滤掉非法坐标点
         point_features = point_features[np.isfinite(point_features).all(axis=1)]
         return point_features
 
     def set_split(self, split):
+        """
+        重置数据集对象使用的划分方式。相当于变更当前数据集为 training(train) 或者 validation(test)
+        """
         super().__init__(
             dataset_cfg=self.dataset_cfg, class_names=self.class_names, training=self.training,
             root_path=self.root_path, logger=self.logger
@@ -177,25 +246,35 @@ class ArsDataset(DatasetTemplate):
         split_dir = self.root_path / 'ImageSets' / (self.split + '.txt')
         self.sample_id_list = [x.strip() for x in open(split_dir).readlines()] if split_dir.exists() else []
         self.ars_infos = []
+        # 根据重置的 split 去装载对应的 info pkl 文件 (只有'train'走train分支,否则test分支)
         self.include_data('train' if split == 'train' else 'test')
 
     def __len__(self):
+        """返回数据集的样本大小。是否合并所有的 iteration 到一个 epoch 中取决于配置设定。"""
         if self._merge_all_iters_to_one_epoch:
             return len(self.sample_id_list) * self.total_epochs
         return len(self.ars_infos)
 
     def __getitem__(self, index):
+        """
+        单次通过 index 读取样本的信息和数据字典。
+        该数据字典后续将传给 prepare_data() 完成实际的数据增强和体素化处理。
+        """
         if self._merge_all_iters_to_one_epoch:
             index = index % len(self.ars_infos)
 
         info = copy.deepcopy(self.ars_infos[index])
         sample_idx = info['point_cloud']['lidar_idx']
+        
+        # 获得点云数据
         points = self.get_lidar(sample_idx)
+        # 初始化基础的数据输入项
         input_dict = {
             'frame_id': sample_idx,
             'points': points
         }
 
+        # 存在真值标签,则在字典中补全类别和框
         if 'annos' in info:
             annos = info['annos']
             gt_names = annos['name']
@@ -205,18 +284,25 @@ class ArsDataset(DatasetTemplate):
                 'gt_boxes': gt_boxes_lidar
             })
 
+        # 调用 DatasetTemplate 提供的 prepare_data 实现数据预处理与体素增强
         data_dict = self.prepare_data(data_dict=input_dict)
         return data_dict
 
     def get_infos(self, class_names, num_workers=4, has_label=True, sample_id_list=None, num_features=4):
+        """
+        根据指定样本列表生成 info 列表对象(包含每帧的点云路径,真值等信息)。
+        这在通过 `create_ars_infos` 操作时使用以固化数据索引及真值信息。
+        """
         import concurrent.futures as futures
 
         def process_single_scene(sample_idx):
             print('%s sample_idx: %s' % (self.split, sample_idx))
             info = {}
+            # 设置基本 point cloud 属性信息
             pc_info = {'num_features': num_features, 'lidar_idx': sample_idx}
             info['point_cloud'] = pc_info
 
+            # 解析标注加入 info 用于后续获取
             if has_label:
                 annotations = {}
                 gt_boxes_lidar, name = self.get_label(sample_idx)
@@ -227,19 +313,26 @@ class ArsDataset(DatasetTemplate):
             return info
 
         sample_id_list = sample_id_list if sample_id_list is not None else self.sample_id_list
+        # 采用多线程方式并发解析获取
         with futures.ThreadPoolExecutor(num_workers) as executor:
             infos = executor.map(process_single_scene, sample_id_list)
         return list(infos)
 
     def create_groundtruth_database(self, info_path=None, used_classes=None, split='train'):
+        """
+        提取包含目标的真值点云用来建立 GT database(用于 GT Sampling 数据增强）。
+        会在数据根目录下生成 `gt_database` 文件夹以及关联的 `.pkl` dbinfo 描述文件。
+        """
         import torch
 
         database_save_path = Path(self.root_path) / ('gt_database' if split == 'train' else ('gt_database_%s' % split))
         db_info_save_path = Path(self.root_path) / ('ars_dbinfos_%s.pkl' % split)
 
+        # 确保目标路径建立
         database_save_path.mkdir(parents=True, exist_ok=True)
         all_db_infos = {name: [] for name in self.class_names}
 
+        # 加载所有通过 get_infos 提前生成的 pkl 信息
         with open(info_path, 'rb') as f:
             infos = pickle.load(f)
 
@@ -247,25 +340,33 @@ class ArsDataset(DatasetTemplate):
             print('gt_database sample: %d/%d' % (k + 1, len(infos)))
             info = infos[k]
             sample_idx = info['point_cloud']['lidar_idx']
+            # 取点
             points = self.get_lidar(sample_idx)
+            
+            # 取框和类别
             annos = info['annos']
             names = annos['name']
             gt_boxes = annos['gt_boxes_lidar']
-
             num_obj = gt_boxes.shape[0]
+
+            # 查询位于任意GT Boxes里的所有点云集合, 依赖 CUDA/CPU roi_aware 算子实现
             point_indices = roiaware_pool3d_utils.points_in_boxes_cpu(
                 torch.from_numpy(points[:, 0:3]), torch.from_numpy(gt_boxes)
             ).numpy()
 
             for i in range(num_obj):
+                # 为每个目标 box 单独切分出一个用于增强时直接读取的 bin 文件
                 filename = '%s_%s_%d.bin' % (sample_idx, names[i], i)
                 filepath = database_save_path / filename
+                # 取出归属此物体框上的所有点
                 gt_points = points[point_indices[i] > 0]
 
+                # 相对于框中心获取物体的相对点云坐标以方便平移和粘贴
                 gt_points[:, :3] -= gt_boxes[i, :3]
                 with open(filepath, 'w') as f:
                     gt_points.tofile(f)
 
+                # 将其加入到对应类别的可用的DB信息维护字典里
                 if (used_classes is None) or names[i] in used_classes:
                     db_path = str(filepath.relative_to(self.root_path))
                     db_info = {
@@ -281,11 +382,18 @@ class ArsDataset(DatasetTemplate):
         for k, v in all_db_infos.items():
             print('Database %s: %d' % (k, len(v)))
 
+        # 落盘到 ars_dbinfos_xx.pkl
         with open(db_info_save_path, 'wb') as f:
             pickle.dump(all_db_infos, f)
 
 
 def create_ars_infos(dataset_cfg, class_names, data_path, save_path, workers=4):
+    """
+    一个完整的自动化入口流程,通过命令行调用。
+    流程大致包括:
+    1. 根据数据集根路径及划分信息生成划分好的 info pkl文件。
+    2. 生成后续方便执行 GT Sampling 增强使用的 GT Database。
+    """
     dataset = ArsDataset(
         dataset_cfg=dataset_cfg, class_names=class_names, root_path=data_path,
         training=False, logger=common_utils.create_logger()
@@ -298,6 +406,7 @@ def create_ars_infos(dataset_cfg, class_names, data_path, save_path, workers=4):
 
     print('------------------------Start to generate data infos------------------------')
 
+    # 生成 Train_infos 的 Pkl
     dataset.set_split(train_split)
     ars_infos_train = dataset.get_infos(
         class_names, num_workers=workers, has_label=True, num_features=num_features
@@ -306,6 +415,7 @@ def create_ars_infos(dataset_cfg, class_names, data_path, save_path, workers=4):
         pickle.dump(ars_infos_train, f)
     print('Ars info train file is saved to %s' % train_filename)
 
+    # 生成 Val_infos 的 Pkl
     dataset.set_split(val_split)
     ars_infos_val = dataset.get_infos(
         class_names, num_workers=workers, has_label=True, num_features=num_features
@@ -315,12 +425,14 @@ def create_ars_infos(dataset_cfg, class_names, data_path, save_path, workers=4):
     print('Ars info val file is saved to %s' % val_filename)
 
     print('------------------------Start create groundtruth database for data augmentation------------------------')
+    # 结合生成的 Train_infos Pkl 生成包含相对坐标的GT objects以作 Data Augmentation
     dataset.set_split(train_split)
     dataset.create_groundtruth_database(train_filename, split=train_split)
     print('------------------------Data preparation done------------------------')
 
 
 if __name__ == '__main__':
+    # 支持脚本执行,传参为: `create_ars_infos <对应的dataset_yaml配置文件路径>` 以开启该数据集的数据打标与抽取打包流程
     import sys
     import yaml
     from easydict import EasyDict
