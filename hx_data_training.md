@@ -10,7 +10,6 @@
 - **输出**：训练好的模型检查点，可用于推理和评估
 - **评估指标**：KITTI 风格的 AP（Average Precision）
 
----
 
 ## 说明
 原始数据在/media/hirain/87e9cd68-1278-4bae-8d73-a0eb5d1ac165/home/jac/ars_hx_train_data/origin_type目录下,内容如下：
@@ -275,7 +274,15 @@ Database Cyclist: XXX
 - `data/ars/ars_dbinfos_train.pkl` - GT 数据库索引文件
 - `data/ars/gt_database/` - GT 数据库目录
 
----
+
+**查看结果**：
+通过可视化脚本查看框和点云的投影效果，在可视化界面按a/d表示上一帧/下一帧
+```
+cd tools 
+python3 vis_ars_data.py --data_path /media/hirain/87e9cd68-1278-4bae-8d73-a0eb5d1ac165/home/jac/ars_hx_train_data/data/ars
+
+
+```
 
 ### 步骤 2：调整数据集配置文件
 
