@@ -562,7 +562,7 @@ class ArsDataset(DatasetTemplate):
 
         all_db_infos = {name: [] for name in self.class_names}
         # 使用进程池绕过GIL限制,实现真正的并行处理
-        num_workers = min(multiprocessing.cpu_count(), max(4, len(infos)))
+        num_workers = min(multiprocessing.cpu_count() - 4, max(4, len(infos)))
         print('Using %d worker processes for GT database creation' % num_workers)
 
         with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:

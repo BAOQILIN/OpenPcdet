@@ -31,15 +31,23 @@ class DummyDataset:
 class VFEWrapper(torch.nn.Module):
     """
     Model A: PillarVFE (legacy-compatible).
+
     Input:  voxel_features (M, 20, 4), point_num_per_voxel (M,), voxel_coords (M, 4)
-    Output: pillar_features (1, M, 64) — 3D sparse, batch dim preserved
+    Output: pillar_features (M, 20, 64) — per-point features, no batch dim
+
+    The VFE internally does max-pooling across the point dimension, but for
+    legacy C++ engine compatibility we broadcast the pooled result back to
+    the per-point shape. The engine does its own host-side max-pool before
+    scatter, so the computation is equivalent.
     """
+
+    MAX_POINTS_PER_VOXEL = 20
 
     def __init__(self, vfe):
         super().__init__()
         self.vfe = vfe
 
-    def forward(self, voxel_features, voxel_coords, point_num_per_voxel):
+    def forward(self, voxel_features, point_num_per_voxel, voxel_coords):
         batch_dict = {
             'voxels': voxel_features,
             'voxel_coords': voxel_coords,
@@ -47,7 +55,14 @@ class VFEWrapper(torch.nn.Module):
             'batch_size': 1,
         }
         batch_dict = self.vfe(batch_dict)
-        return batch_dict['pillar_features']
+        pf = batch_dict['pillar_features']  # (1, M, 64) or (M, 64)
+
+        # Convert to legacy per-point format (M, 20, 64) by broadcasting the
+        # max-pooled feature across the point dimension.
+        if pf.dim() == 3:
+            pf = pf.squeeze(0)                     # (1, M, 64) → (M, 64)
+        pf = pf.unsqueeze(1).expand(-1, self.MAX_POINTS_PER_VOXEL, -1)  # (M, 20, 64)
+        return pf
 
 
 class Backbone2DWrapper(torch.nn.Module):
@@ -120,7 +135,11 @@ def export_split_onnx(args):
     model.eval()
 
     checkpoint = torch.load(args.ckpt, map_location='cuda', weights_only=False)
-    model.load_state_dict(checkpoint['model_state'], strict=True)
+    missing, unexpected = model.load_state_dict(checkpoint['model_state'], strict=False)
+    if missing:
+        print(f'Missing keys (will use init values): {missing}')
+    if unexpected:
+        print(f'Unexpected keys (ignored): {unexpected}')
     print(f'Loaded checkpoint from {args.ckpt} (epoch {checkpoint.get("epoch", "unknown")})')
 
     # module_list: [PillarVFE, PointPillarScatter, Backbone2D, DenseHead]
@@ -134,10 +153,9 @@ def export_split_onnx(args):
     output_dir = Path(args.output_dir) if args.output_dir else ckpt_path.parent
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    stem = ckpt_path.stem
-    vfe_path = output_dir / f'{stem}_vfe.onnx'
-    backbone_path = output_dir / f'{stem}_backbone2d.onnx'
-    rpn_path = output_dir / f'{stem}_rpn.onnx'
+    vfe_path = output_dir / 'vfe.onnx'
+    backbone_path = output_dir / 'backbone2D.onnx'
+    rpn_path = output_dir / 'rpn.onnx'
 
     # Common dummy input (legacy-compatible)
     M = args.max_voxels
@@ -160,12 +178,12 @@ def export_split_onnx(args):
     with torch.no_grad():
         torch.onnx.export(
             vfe_wrapper,
-            (dummy_voxels, dummy_voxel_coords, dummy_voxel_num_points),
+            (dummy_voxels, dummy_voxel_num_points, dummy_voxel_coords),
             str(vfe_path),
             export_params=True,
             opset_version=args.opset_version,
             do_constant_folding=True,
-            input_names=['voxel_features', 'voxel_coords', 'point_num_per_voxel'],
+            input_names=['voxel_features', 'point_num_per_voxel', 'voxel_coords'],
             output_names=['pillar_features'],
             dynamic_axes={
                 'voxel_features': {0: 'num_voxels'},

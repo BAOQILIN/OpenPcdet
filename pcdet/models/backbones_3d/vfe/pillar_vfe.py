@@ -125,9 +125,6 @@ class PillarVFE(VFETemplate):
         features *= mask
         for pfn in self.pfn_layers:
             features = pfn(features)
-        if torch.onnx.is_in_onnx_export():
-            features = features.view(1, -1, self.num_filters[-1])
-        else:
-            features = features.squeeze()
+        features = features.squeeze(1)  # explicit dim for TensorRT (dynamic shape)
         batch_dict['pillar_features'] = features
         return batch_dict

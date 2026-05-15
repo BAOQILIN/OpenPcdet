@@ -1,4 +1,4 @@
-CLASS_NAMES: ['Pedestrian', 'Mbike', 'Car', 'Bus']
+CLASS_NAMES: ['Pedestrian', 'Mbike', 'Car', 'Bus','Tricycle']
 
 DATA_CONFIG:
     # 继承的数据集基础配置文件
@@ -118,6 +118,16 @@ MODEL:
                 'anchor_sizes': [[5.5, 2.0, 2.5]],
                 'anchor_rotations': [0, 1.57],
                 'anchor_bottom_heights': [-1.78],
+                'align_center': False,
+                'feature_map_stride': 4,
+                'matched_threshold': 0.6,
+                'unmatched_threshold': 0.45
+            },
+            {
+                'class_name': 'Tricycle',
+                'anchor_sizes': [[1.76, 0.6, 1.73]],
+                'anchor_rotations': [0, 1.57],
+                'anchor_bottom_heights': [-0.6],
                 'align_center': False,
                 'feature_map_stride': 4,
                 'matched_threshold': 0.6,
